@@ -1,0 +1,21 @@
+services:
+  project:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    image: ${PROJECT_NAME}:dev
+    container_name: ${PROJECT_NAME}_dev
+    user: "${USERNAME}"
+    volumes:
+      - ./src:${ROS_WS}/src
+      - ./tests:${ROS_WS}/tests
+      - ./reports:${ROS_WS}/reports
+    working_dir: ${ROS_WS}
+    tty: true
+    stdin_open: true
+    network_mode: host

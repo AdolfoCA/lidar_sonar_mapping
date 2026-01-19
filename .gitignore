@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+
+# Data (do not commit datasets)
+data/*
+!data/.gitkeep
+
+# OS
+.DS_Store
+
