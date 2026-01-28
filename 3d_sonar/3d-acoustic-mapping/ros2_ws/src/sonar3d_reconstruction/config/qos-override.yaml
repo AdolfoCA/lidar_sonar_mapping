@@ -1,0 +1,15 @@
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 1
+/ouster/points:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 10
+/ouster/imu:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 10

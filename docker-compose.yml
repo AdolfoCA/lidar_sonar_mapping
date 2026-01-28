@@ -3,11 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        ROS_DISTRO: ${ROS_DISTRO}
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
+      #args:
+        #ROS_DISTRO: ${ROS_DISTRO}
+        #USERNAME: ${USERNAME}
+        #UID: ${UID}
+        #GID: ${GID}
     image: ${PROJECT_NAME}:dev
     container_name: ${PROJECT_NAME}_dev
     user: "${USERNAME}"

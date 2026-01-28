@@ -1,0 +1,119 @@
+FROM ros:humble-ros-base
+
+ARG USERNAME=rosdev
+ARG UID=1000
+ARG GID=$UID
+ARG OPENCV_VERSION=4.10.0
+# Install dependencies
+RUN apt update -q \
+    && apt upgrade -q -y \
+    && apt install -y --no-install-recommends \
+    software-properties-common \
+    build-essential cmake git unzip pkg-config make libjpeg-dev libpng-dev libtiff-dev libgtk2.0-dev libavcodec-dev libavformat-dev libswscale-dev \
+    python3-pip \
+    python3-dev \ 
+    gfortran \
+    libatlas-base-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    libfreetype6-dev \
+    libpng-dev \
+    libtbb2 libtbb-dev \
+    libdc1394-dev libeigen3-dev libtheora-dev libvorbis-dev libxvidcore-dev libx264-dev sphinx-common libtbb-dev yasm libfaac-dev libopencore-amrnb-dev libopencore-amrwb-dev libopenexr-dev libgstreamer-plugins-base1.0-dev libavutil-dev libavfilter-dev \
+    xauth \
+    cmake \
+    git \
+    libboost-all-dev \
+    ros-humble-cv-bridge \
+    netcat \
+    iputils-ping \
+    ros-humble-rosbag2-storage-mcap \
+    ros-humble-vision-msgs \
+    ros-humble-sensor-msgs-py \
+    libogre-1.12-dev \
+    ros-humble-rviz2 \
+    wget \
+    unzip \
+    && apt clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# install python dependencies
+RUN apt-get update && apt-get install -y python3-pip
+RUN apt-get remove -y python3-numpy
+RUN pip3 uninstall -y numpy
+COPY requirements.txt /tmp/
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+
+# Check version of numpy
+RUN python3 -c "import numpy; print(numpy.__version__)" && sleep 10
+RUN which python3 && sleep 10
+
+# Install OpenCV
+# Build and install OpenCV
+WORKDIR /opencv
+RUN wget -O opencv.zip https://github.com/opencv/opencv/archive/${OPENCV_VERSION}.zip \
+    && wget -O opencv_contrib.zip https://github.com/opencv/opencv_contrib/archive/${OPENCV_VERSION}.zip \
+    && unzip opencv.zip \
+    && unzip opencv_contrib.zip \
+    && mv opencv-${OPENCV_VERSION} opencv \
+    && mv opencv_contrib-${OPENCV_VERSION} opencv_contrib
+# Build OpenCV
+RUN mkdir /opencv/opencv/build
+WORKDIR /opencv/opencv/build
+
+# Check and display installed Python and NumPy versions
+RUN python3 -m pip show numpy && python3 -c "import sys; print('Python:', sys.executable)" && sleep 10
+
+RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
+ -D CMAKE_INSTALL_PREFIX=/usr/local \
+ -D INSTALL_PYTHON_EXAMPLES=ON \
+ -D INSTALL_C_EXAMPLES=ON \
+ -D OPENCV_ENABLE_NONFREE=ON \
+ -D OPENCV_GENERATE_PKGCONFIG=ON \
+ -D OPENCV_EXTRA_MODULES_PATH=/opencv/opencv_contrib/modules \
+ -D PYTHON_EXECUTABLE=$(which python3) \
+ -D PYTHON3_PACKAGES_PATH=$(python3 -c "import site; print(site.getsitepackages()[0])") \
+ -D BUILD_EXAMPLES=ON .. \
+    && make -j$(nproc) && make install && ldconfig
+
+RUN echo pkg-config --modversion opencv4
+
+# Create a non-root user and set permissions
+RUN groupadd -g $GID $USERNAME && \
+    useradd -m -u $UID -g $GID -s /bin/bash $USERNAME && \
+    apt-get update && apt-get install -y sudo && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Set the correct permissions for the workspace directory
+ADD ros2_ws /home/$USERNAME/ros2_ws
+RUN sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/ros2_ws
+
+##############################################################
+# Make sure sudo commands has been executed before this line #
+# Switch to the non-root user
+USER $USERNAME
+
+# If build, log and install directories are present, delete them
+RUN sudo rm -rf /home/$USERNAME/ros2_ws/build /home/$USERNAME/ros2_ws/log /home/$USERNAME/ros2_ws/install
+
+# Copy configuration files
+RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /home/$USERNAME/.bashrc \
+    && echo 'source /home/'$USERNAME'/ros2_ws/install/setup.bash' >> /home/$USERNAME/.bashrc
+
+# Build the ROS 2 workspace
+WORKDIR /home/$USERNAME/ros2_ws
+
+# Build the oculus_ros_services package first
+RUN /bin/bash -c "source /opt/ros/$ROS_DISTRO/setup.bash && colcon build --symlink-install"
+
+# Source the workspace to include oculus_ros_services
+RUN /bin/bash -c "source /opt/ros/$ROS_DISTRO/setup.bash && source /home/$USERNAME/ros2_ws/install/setup.bash && rosdep update && rosdep install --from-paths src --ignore-src -r -y && colcon build --symlink-install"
+
+# Make middleware_profiles directory
+RUN sudo mkdir -p /usr/local/share/middleware_profiles/
+
+# Copy over the rtps_udp_profile.xml to the /usr/local/share/middleware_profiles/
+COPY rtps_udp_profile.xml /usr/local/share/middleware_profiles/
+
+CMD ["bash"]

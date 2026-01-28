@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cfar</name>
+  <version>0.0.0</version>
+  <description>ROS2 package for cfar, inspired by the work of John McConnell and co. (jake3991 on Github).</description>
+  <maintainer email="s194243@student.dtu.dk">jonpo</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>pybind11</buildtool_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <build_depend>rclcpp</build_depend>
+  <build_depend>rclpy</build_depend>
+  <build_depend>eigen3</build_depend>
+  <build_depend>pybind11</build_depend>
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>pybind11</exec_depend>
+  
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

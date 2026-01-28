@@ -1,0 +1,33 @@
+version: '3'
+services:
+  lio-sam-thesis-container:
+    image: lio-sam-thesis
+    container_name: lio-sam-thesis-container
+    privileged: true
+    hostname: lio-sam-thesis-container
+    restart: always
+    stdin_open: true
+    tty: true
+    network_mode: "host"
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.8.8
+    environment:
+      - "DISPLAY=$DISPLAY"
+      - "NVIDIA_VISIBLE_DEVICES=all"
+      - "NVIDIA_DRIVER_CAPABILITIES=all"
+      - "FASTRTPS_DEFAULT_PROFILES_FILE=/usr/local/share/middleware_profiles/rtps_udp_profile.xml"
+    volumes:
+      - "/tmp/.X11-unix:/tmp/.X11-unix"
+      - "/etc/localtime:/etc/localtime:ro"
+      - "/etc/timezone:/etc/timezone:ro"
+      - "/dev/*:/dev/*"
+      - "/home/aimas/dtu/thesis/data/raw/da1/lio-sam-data:/storage"
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [ gpu ]

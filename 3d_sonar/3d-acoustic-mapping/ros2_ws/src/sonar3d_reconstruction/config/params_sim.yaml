@@ -1,0 +1,40 @@
+acoustic_3d_reconstruction:
+  ros__parameters:  
+    sonars:
+      horizontal:
+        topic: "/oculus/drawn_sonar_rect"
+        FOV: 180.0
+        aperture: 20.0
+        num_beams: 512
+      vertical:
+        topic: "/blueview/drawn_sonar_rect" # "/blueview/drawn_sonar_rect"
+        FOV: 180.0
+        aperture: 20.0
+        num_beams: 512
+    verticalTransformation: 0.2
+    horizontalTransformation: 0.0
+    
+    #define which implementation we want to match the features
+    method: python # options are cpp or python
+
+    #do we want to see the feature images from CFAR? turn on to publish
+    visFeatures: True
+
+    #define the matching parameters
+    uncertaintyMax: .8
+    patchSize: 1
+
+    #define CFAR for the horizontal sonar
+    cfar:
+      horizontal:
+        tc: 16
+        gc: 8
+        pfa: .2
+        threshold: 50.
+      
+      vertical:
+        #define CFAR for the vertical sonar
+        tc: 16
+        gc: 8
+        pfa: .2
+        threshold: 50.

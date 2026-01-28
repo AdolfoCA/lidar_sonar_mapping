@@ -1,0 +1,1 @@
+ros2 bag play -r 0.2 -s mcap --qos-profile-overrides-path /home/rosdev/ros2_ws/src/sonar3d_reconstruction/config/qos-override.yaml /data/20241205_Sydhavn_Otter_BlueROV2/payload/merged/2024-12-05-59.mcap

@@ -1,0 +1,59 @@
+acoustic3d_patch:
+  ros__parameters:  
+    use_sim_time: true
+    sonars:
+      horizontal:
+        topic: "/oculus/sonar_image"
+        aperture: 20.0 # degrees
+        frame_id: "oculus"
+        sound_speed: 0.0 # m/s. Set to zero to use the one given in message
+      vertical:
+        topic: "/blueview/sonar_image"
+        aperture: 20.0 # degrees
+        frame_id: "blueview"
+        sound_speed: 0.0 # m/s. Set to zero to use the one given in message
+      min_range: 0.5 # Set to 0 to disable
+      sound_speed_actual: 1450.97 # m/s. Set to None to use the one given in message. If different in messages, they will follow horizontal sonar
+
+    #define which implementation we want to match the features
+    method: cpp # options are cpp or python
+    visualize: 
+      enable: False
+      output_folder: "/home/rosdev/ros2_ws/log/images/patch"
+
+    #define the matching parameters
+    uncertaintyMax: .95
+    patchSize: 1
+
+    #define CFAR for the horizontal sonar
+    cfar:
+      horizontal:
+        tc: 16
+        gc: 8
+        pfa: .15
+        threshold: 30.
+        
+      #define CFAR for the vertical sonar
+      vertical:
+        tc: 24
+        gc: 8
+        pfa: .15
+        threshold: 50.
+
+    # denoising parameters
+    denoise:
+      method: classic # options are bm3d or nlmeans
+      horizontal:
+        enable: True
+        h: 14
+        templateWindowSize: 15
+        searchWindowSize: 27
+      vertical:
+        enable: True
+        h: 14
+        templateWindowSize: 15
+        searchWindowSize: 27
+    
+    cluster:
+      threshold: 0.15
+      min_samples: 20

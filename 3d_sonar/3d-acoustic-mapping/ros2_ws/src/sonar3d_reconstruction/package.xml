@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sonar3d_reconstruction</name>
+  <version>0.0.0</version>
+  <description>ROS2 package for 3D reconstruction using orthogonal sonar images, inspired by the work of John McConnell and co. (jake3991 on Github).</description>
+  <maintainer email="s194243@student.dtu.dk">jonpo</maintainer>
+  <license>MIT</license>
+
+  <depend>cfar</depend>
+  <depend>opencv</depend>
+  <depend>numpy</depend>
+  <depend>scipy</depend>
+  <depend>eigen3</depend>
+  <depend>pybind11</depend>
+  <depend>sensor_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>marine_acoustic_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  
+  <exec_depend>cv_bridge</exec_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

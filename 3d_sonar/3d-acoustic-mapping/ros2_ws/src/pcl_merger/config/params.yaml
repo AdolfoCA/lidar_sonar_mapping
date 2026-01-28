@@ -1,0 +1,15 @@
+add_sonars_to_lidar:
+  ros__parameters:
+    use_sim_time: true
+    lidar_cloud_topic: "/ouster/points"
+    sonar_cloud_horizontal_topic: "/sonar_cloud_horizontal"
+    sonar_cloud_vertical_topic: "/sonar_cloud_vertical"
+    sonar_cloud_patch_topic: "/sonar_cloud_patch"
+    output_cloud_topic: "/lidar_sonar_cloud"
+    transforms_topic: "/tf_static"
+    target_frame: "os_lidar"
+    transforms:
+      sonar_cloud_horizontal: "oculus"
+      sonar_cloud_vertical: "blueview"
+      sonar_cloud_patch: "oculus"
+      lidar_cloud: "os_lidar"

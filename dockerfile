@@ -29,8 +29,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-rosdep \
     python3-colcon-common-extensions \
     ros-${ROS_DISTRO}-rosbag2-storage-mcap \
+    ros-${ROS_DISTRO}-pcl-msgs \
+    ros-${ROS_DISTRO}-builtin-interfaces \
+    ros-${ROS_DISTRO}-sensor-msgs \
+    ros-${ROS_DISTRO}-sensor-msgs-py \
+    ros-${ROS_DISTRO}-tf2 \
+    ros-${ROS_DISTRO}-tf2-ros \
+    ros-${ROS_DISTRO}-geometry-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-std-srvs \
+    ros-${ROS_DISTRO}-rclcpp \
+    ros-${ROS_DISTRO}-rclpy \
+    python3-setuptools \
+    libopencv-dev \
     sudo \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
+## Jupiter stuff 
+RUN python3 -m pip install --no-cache-dir \
+    jupyter \
+    jupyterlab \
+    ipykernel
+
 
 # Create/ensure single dev user "rosdev" without failing if GID already exists
 RUN set -eux; \
@@ -52,6 +71,10 @@ RUN set -eux; \
     fi; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
+# Create Jupyter kernel with ROS environment
+RUN mkdir -p /home/${USERNAME}/.local/share/jupyter/kernels/ros2 && \
+printf '{\n  "display_name": "Python 3 (ROS2)",\n  "language": "python",\n  "argv": [\n    "bash",\n    "-c",\n    "source /opt/ros/%s/setup.bash && source /home/%s/ros2_ws/install/setup.bash 2>/dev/null || true && exec python3 -m ipykernel_launcher -f {connection_file}"\n  ]\n}\n' "${ROS_DISTRO}" "${USERNAME}" > /home/${USERNAME}/.local/share/jupyter/kernels/ros2/kernel.json && \
+chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.local/share/jupyter/kernels/ros2
 # Workspace
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}/ros2_ws
@@ -61,7 +84,6 @@ RUN mkdir -p src tests reports
 USER root
 COPY ros_entrypoint.sh /ros_entrypoint.sh
 RUN chmod +x /ros_entrypoint.sh
-
 USER ${USERNAME}
 ENTRYPOINT ["/ros_entrypoint.sh"]
-CMD ["bash"]
+
