@@ -3,4 +3,4 @@
 Author: Adolfo Cafaro
 
 ## Description
-Short description of the project.
+Building seabed to sky maps using different types of sonars and lidars 
