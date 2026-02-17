@@ -1,6 +1,0 @@
-numpy
-scipy
-pyyaml
-transforms3d
-pynmeagps==1.0.33
-pymap3d==3.0.1

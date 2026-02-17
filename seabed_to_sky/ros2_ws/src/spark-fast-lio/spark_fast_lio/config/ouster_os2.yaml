@@ -1,0 +1,47 @@
+/**:
+  ros__parameters:
+    preprocess:
+      lidar_type: 3
+      scan_line: 128
+      scan_rate: 10
+      timestamp_unit: 3           # 0=SEC, 1=MS, 2=US, 3=NS; Ouster timestamps are in nanoseconds
+      blind: 1.0
+      blind_for_human_pilot: 1.0
+      # Ouster PointCloud2 field name mapping
+      # Set these to match the actual field names published by your Ouster driver.
+      # OS2 with ouster-ros driver uses: reflectivity, ring, near_ir, t
+      # Some older drivers or datasets may use: intensity, ring, ambient, t
+      field_name_time: "t"
+      field_name_ring: "ring"
+      field_name_intensity: "reflectivity"
+      field_name_ambient: "near_ir"
+    mapping:
+      acc_cov: 0.00041
+      gyr_cov: 0.0000023
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 240.0
+      extrinsic_est_en: false
+      # OS2 integrated IMU/Lidar geometry (from Ouster manual example transforms)
+      extrinsic_T: [ -0.006253, 0.011775, 0.028535 ]     # meters
+      extrinsic_R: [ -1.0,  0.0,  0.0,
+                       0.0, -1.0,  0.0,
+                       0.0,  0.0,  1.0 ]
+      filter_size_map: 0.5
+    publish:
+      path_en: true
+      scan_publish_en: true
+      dense_publish_en: true
+      scan_lidarframe_pub_en: true
+      scan_bodyframe_pub_en: true
+      scan_baseframe_pub_en: false
+    pcd_save:
+      pcd_save_en: false
+      interval: 10
+    verbose: true
+    runtime_pos_log_enable: false
+    point_filter_num_for_preprocessing: 1
+    point_filter_num: 4
+    max_iteration: 4
+    cube_side_length: 1000.0
