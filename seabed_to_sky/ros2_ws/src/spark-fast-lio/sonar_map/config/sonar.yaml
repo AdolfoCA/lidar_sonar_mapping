@@ -1,0 +1,36 @@
+# =============================================================================
+# sonar_scan_ned.yaml
+# Configuration for the sonar_scan_NED node
+# Package: spark_fast_lio (or wherever the node lives)
+#
+# This node reads sonar points in the sonar sensor frame, looks up the full
+# TF chain to odom via tf_static_publisher, and republishes in the odom frame.
+#
+# When swapping sonar, change ONLY the two marked lines.
+# =============================================================================
+
+# sonar.yaml
+sonar_scan_ned:
+  ros__parameters:
+    odom_frame:        "odom"
+    sonar_frame:       "blueview"
+    sonar_cloud_topic: "/blueview/point2/leading"
+    output_topic:      "sonar_scan"
+    tf_timeout:        0.1
+
+sonar_map_ned:
+  ros__parameters:
+    input_topic:    "sonar_scan"
+    output_topic:   "sonar_map"
+    odom_topic:     "odometry"
+    map_frame:      "odom"
+    voxel_size:     0.01
+    window_radius:  50.0
+    publish_rate:   2.0
+    source_id:      0
+
+    #input_topic: "sonar_scan"
+    #output_topic: "sonar_map"
+    #map_frame: "odom"
+    #max_points: 10000000
+    #publish_rate: 1.0

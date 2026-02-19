@@ -21,7 +21,7 @@
       b_acc_cov: 0.0001
       b_gyr_cov: 0.0001
       fov_degree: 360.0
-      det_range: 240.0                # OS2: 240m range at 80% reflectivity, >50% detection
+      det_range: 170.0                # OS1: 170m range at 80% reflectivity, >50% detection
       extrinsic_est_en: false
       # OS2 integrated IMU/Lidar geometry (from Ouster manual example transforms)
       extrinsic_T: [ -0.006253, 0.011775, 0.028535 ]

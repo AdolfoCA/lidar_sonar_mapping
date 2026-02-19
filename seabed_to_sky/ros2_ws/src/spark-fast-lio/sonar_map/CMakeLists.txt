@@ -13,14 +13,14 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 
 # Install Python executables - rename to remove .py extension
-install(PROGRAMS src/sonar_scan_NED.py
+install(PROGRAMS src/sonar_scan_ned.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME sonar_scan_NED
+  RENAME sonar_scan_ned
 )
 
-install(PROGRAMS src/sonar_map_NED.py
+install(PROGRAMS src/sonar_map_ned.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME sonar_map_NED
+  RENAME sonar_map_ned
 )
 
 install(PROGRAMS src/save_map.py
@@ -29,14 +29,14 @@ install(PROGRAMS src/save_map.py
 )
 
 # norbit mapping 
-install(PROGRAMS src/norbit_map_NED.py
+install(PROGRAMS src/norbit_map_ned.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME norbit_map_NED
+  RENAME norbit_map_ned
 )
 
-install(PROGRAMS src/norbit_scan_NED.py
+install(PROGRAMS src/norbit_scan_ned.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME norbit_scan_NED
+  RENAME norbit_scan_ned
 )
 
 # Install launch files

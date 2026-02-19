@@ -48,7 +48,7 @@ class SaveMapServer(Node):
         self.current_pose = None
         self.init_captured = False
         
-        self.output_dir = Path.home() / 'spark-fast-lio' / 'saved_maps'
+        self.output_dir = Path.home() / 'ros2_ws' / 'saved_maps'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.get_logger().info('='*50)
@@ -56,7 +56,6 @@ class SaveMapServer(Node):
         self.get_logger().info('='*50)
         self.get_logger().info(f'Output directory: {self.output_dir}')
         self.get_logger().info('Listening for /odometry and /sonar_map')
-        self.get_logger().info('Call: adodaca1')
 
     def odom_callback(self, msg: Odometry):
         """Store odometry - capture FIRST pose as initial"""
@@ -221,3 +220,5 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+## ros2 service call /service_name std_srvs/srv/Trigger {}

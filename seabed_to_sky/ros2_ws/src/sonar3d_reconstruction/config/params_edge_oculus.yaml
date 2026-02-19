@@ -1,0 +1,23 @@
+acoustic3d_edge_horizontal:
+  ros__parameters:  
+    use_sim_time: true
+    sonar:
+      topic: "/oculus/sonar_image"
+      threshold: 180.
+      min_range: 0.7
+      sound_speed: 1438.39 # m/s. Set to zero to use the one given in message
+      sound_speed_actual: 1482.42 # m/s. Set to None to use the one given in message
+      pitch: 30.0 # degrees
+    denoise:
+      standard: True
+      open: 1 # 0 to disable. Oherwise number of iterations
+      RANSAC: False
+      MAD: False
+    method:
+      leading_edge: True
+      falling_edge: False
+    output:
+      topic: "/sonar_cloud_horizontal"
+      frame_id: "oculus"
+      visualize: False
+      folder: "/home/rosdev/ros2_ws/src/images/horizontal"

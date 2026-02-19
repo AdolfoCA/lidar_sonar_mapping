@@ -1,0 +1,263 @@
+# =============================================================================
+# seabed_to_sky.yaml
+# Unified configuration for the Seabed-to-Sky mapping system
+# Package: spark_fast_lio
+#
+# Sections:
+#   1. Platform / sensor selection  <-- change this when you swap sensors
+#   2. SPARK-FastLIO2 (LiDAR-inertial odometry)
+#   3. Sonar processing (acoustic3d_edge)
+#   4. Sonar mapping (sonar_scan + sonar_map nodes)
+#   5. Static TF transforms
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. ACTIVE SONAR SELECTION
+#    Set sonar_type to "blueview" or "oculus".
+#    The sonar_frame value is forwarded to acoustic3d_edge and the sonar
+#    mapping nodes so you only need to change it in one place.
+# -----------------------------------------------------------------------------
+platform:
+  sonar_type:  "blueview"       # "blueview" | "oculus" | "norbit"
+  sonar_frame: "blueview"       # TF frame of the active sonar head
+  lidar_type:  "os1"            # "os1" | "os2"
+
+
+# -----------------------------------------------------------------------------
+# 2. SPARK-FastLIO2  (node: spark_fast_lio / spark_lio_mapping)
+# -----------------------------------------------------------------------------
+/**:
+  ros__parameters:
+
+    # ---- Common ----
+    common:
+      map_frame:            "odom"
+      lidar_frame:          "os_lidar"
+      imu_frame:            "os_imu"
+      base_frame:           "base_link"
+      visualization_frame:  "os_imu"
+      save_dir:             ""
+      sequence_name:        ""
+      time_sync_en:         false
+
+    # ---- Preprocessing ----
+    preprocess:
+      lidar_type:   3          # 3 = OUST64 (Ouster OS-series)
+      scan_line:    128        # OS2-128: 128 | OS1-64: 64
+      scan_rate:    10
+      timestamp_unit: 3       # 0=SEC 1=MS 2=US 3=NS
+      blind:        1.0        # minimum valid range [m]
+      blind_for_human_pilots: 1.0
+
+      # Ouster PointCloud2 field names
+      # ouster-ros driver (OS2):  t, ring, reflectivity, near_ir
+      # legacy / rosbag datasets: t, ring, intensity, ambient
+      field_name_time:      "t"
+      field_name_ring:      "ring"
+      field_name_intensity: "intensity" # reflectivity for os2 | intensity for os1 
+      field_name_ambient:   "ambient" # near_ir for os2 | ambient for os1 
+
+
+    # ---- IMU / LiDAR extrinsics ( Lidar integrated IMU) ----
+    mapping:
+      acc_cov:   0.00041
+      gyr_cov:   0.0000023
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree:  360.0
+      #det_range:   240.0      # OS2: 240 m @ 80 % reflectivity
+      det_range:   170.0      # OS1: 170 m @ 80 % reflectivity
+      extrinsic_est_en: false
+      extrinsic_T: [ -0.006253,  0.011775,  0.028535 ]
+      extrinsic_R: [ -1.0,  0.0,  0.0,
+                      0.0, -1.0,  0.0,
+                      0.0,  0.0,  1.0 ]
+
+    # ---- Map / filter ----
+    filter_size_map:  0.5
+    cube_side_length: 1000.0
+    max_iteration:    4
+    point_filter_num: 4
+    point_filter_num_for_preprocessing: 1
+
+    # ---- Gravity alignment ----
+    gravity_alignment:
+      enable_gravity_alignment:     false
+      acc_diff_thr:                 0.2
+      num_moving_frames_thr:        20
+      num_gravity_measurements_thr: 20
+      g_base: [0.0, 0.0, -1.0]
+
+    # ---- Publishing ----
+    publish:
+      path_en:                  true
+      scan_publish_en:          true
+      dense_publish_en:         true
+      scan_lidarframe_pub_en:   true
+      scan_bodyframe_pub_en:    true
+      scan_baseframe_pub_en:    false
+
+    # ---- PCD saving ----
+    pcd_save:
+      pcd_save_en: false
+      interval:    10
+
+    # ---- Debug ----
+    verbose:               true
+    runtime_pos_log_enable: false
+
+
+# -----------------------------------------------------------------------------
+# 3. SONAR PROCESSING  (node: acoustic3d_edge_horizontal)
+#    Publishes: /sonar_cloud_horizontal  (frame: blueview or oculus)
+# -----------------------------------------------------------------------------
+acoustic3d_edge_horizontal:
+  ros__parameters:
+    use_sim_time: false
+
+    sonar:
+      topic:              "/oculus/sonar_image"   # change for BlueView driver topic
+      threshold:          180.0
+      min_range:          0.7
+      sound_speed:        0.0          # 0 = use value from message
+      sound_speed_actual: 1482.42      # true water sound speed [m/s]
+      pitch:              30.0         # sonar head pitch [deg]
+
+    denoise:
+      standard: true
+      open:     1                      # morphological opening iterations (0 = off)
+      RANSAC:   false
+      MAD:      false
+
+    method:
+      leading_edge: true
+      falling_edge: false
+
+    output:
+      topic:     "/sonar_cloud_horizontal"
+      frame_id:  "blueview"            # matches platform.sonar_frame above
+      visualize: false
+      folder:    "/home/rosdev/ros2_ws/src/images/horizontal"
+
+
+# -----------------------------------------------------------------------------
+# 4. SONAR MAPPING  (nodes: sonar_scan_NED, sonar_map_NED)
+# -----------------------------------------------------------------------------
+sonar_scan_NED:
+  ros__parameters:
+    # TF frames used for the odom -> sonar transform lookup
+    odom_frame:   "odom"
+    robot_frame:  "os_imu"          # frame whose pose is published by FastLIO2
+    sonar_frame:  "blueview"        # must match acoustic3d_edge output.frame_id
+
+    # Topics
+    #sonar_cloud_topic: "/sonar_cloud_horizontal"
+    sonar_cloud_topic: "/blueview/point2/leading"
+    odometry_topic:    "odometry"
+    output_topic:      "sonar_scan"
+
+    # TF lookup timeout [s] — 0 means non-blocking (skip & warn if not ready)
+    tf_timeout: 0.0
+
+sonar_map_NED:
+  ros__parameters:
+    input_topic:  "sonar_scan"
+    output_topic: "sonar_map"
+    map_frame:    "odom"
+    max_points:   10000000
+    publish_rate: 1.0               # [Hz]
+
+
+# -----------------------------------------------------------------------------
+# 5. STATIC TF TRANSFORMS  (node: tf_static_publisher)
+#
+#    Frame tree overview:
+#
+#      base_link
+#      ├── otter
+#      │   └── otter_frd
+#      │       └── blueview_joint1
+#      │           └── blueview_joint2
+#      │               ├── blueview        (BlueView sonar head)
+#      │               └── oculus          (Oculus sonar head — swap in place of blueview)
+#      └── os_sensor
+#          ├── os_lidar
+#          └── os_imu
+#      base_link
+#      └── imu                             (separate AHRS / VectorNav etc.)
+# -----------------------------------------------------------------------------
+transforms:
+
+  # --- Otter USV hull offset ---
+  - frame_id:       base_link
+    child_frame_id: otter
+    invert: false
+    translation: {x: -0.26, y: 0.0, z: 0.0}
+    rotation:    {x:   0.0, y: 0.0, z: 0.0}   # [deg, RPY]
+
+  # --- Otter FRD (flip to NED / FRD convention) ---
+  - frame_id:       otter
+    child_frame_id: otter_frd
+    invert: true
+    translation: {x: 0.0, y: 0.0,  z: 0.41}
+    rotation:    {x: 180.0, y: 0.0, z: 0.0}  # Z points down
+
+  # --- Sonar pan/tilt joint 1 ---
+  - frame_id:       otter_frd
+    child_frame_id: blueview_joint1
+    invert: false
+    translation: {x: 0.0, y: 0.0, z: 1.24}
+    rotation:    {x: 0.0, y: -30.0, z: 0.0} # pitch
+
+  # --- Sonar pan/tilt joint 2 ---
+  - frame_id:       blueview_joint1
+    child_frame_id: blueview_joint2
+    invert: false
+    translation: {x: 0.0, y: 0.0, z: 0.04}
+    rotation:    {x: 0.0, y: 0.0,  z: 0.0}
+
+  # --- BlueView sonar head ---
+  - frame_id:       blueview_joint2
+    child_frame_id: blueview
+    invert: false
+    translation: {x: 0.1, y: 0.0, z: 0.12}
+    rotation:    {x: 0.0, y: 0.0,  z: 0.0}
+
+  # --- Oculus sonar head (same mount, different transducer) ---
+  #     Adjust translation/rotation to match actual Oculus mounting geometry.
+  #     These values assume it replaces the BlueView at the same bracket position.
+  
+  #- frame_id:       blueview_joint2
+  #  child_frame_id: oculus
+  #  invert: false
+  #  translation: {x: 0.1, y: 0.0, z: 0.12}
+  #  rotation:    {x: 0.0, y: 0.0,  z: 0.0}
+
+  # --- Ouster sensor origin ---
+  - frame_id:       base_link
+    child_frame_id: os_sensor
+    invert: false
+    translation: {x:  0.0, y: 0.0, z: 0.0}
+    rotation:    {x:  0.0, y: 0.0, z: 180.0}
+
+  # --- Ouster LiDAR optical frame ---
+  - frame_id:       os_sensor
+    child_frame_id: os_lidar
+    invert: false
+    translation: {x: -0.26, y: 0.0, z: 0.53}
+    rotation:    {x:   0.0, y: 0.0, z:   0.0}
+
+  # --- Ouster IMU frame ---
+  - frame_id:       os_sensor
+    child_frame_id: os_imu
+    invert: false
+    translation: {x: -0.26, y: 0.0, z: 0.53}
+    rotation:    {x:   0.0, y: 0.0, z:   0.0}
+
+  # --- External IMU (VectorNav / AHRS) ---
+  - frame_id:       base_link
+    child_frame_id: imu
+    invert: false
+    translation: {x: 0.22, y: 0.0, z: 0.49}
+    rotation:    {x: 0.0,  y: -90.0, z: 0.0}
