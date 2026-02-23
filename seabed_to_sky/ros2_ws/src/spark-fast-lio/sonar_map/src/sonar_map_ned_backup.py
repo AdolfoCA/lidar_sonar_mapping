@@ -1,28 +1,8 @@
 #!/usr/bin/env python3
 """
-prob_sonar_map_ros2.py  (v7 — intensity-gated, hits-only, 10 Hz capable)
-------------------------------------------------------------------------
+prob_sonar_map_ros2.py  (v6 — hits-only, 10 Hz capable)
+--------------------------------------------------------
 Beta-Bernoulli probabilistic occupancy map for sonar.
-
-WHAT CHANGED IN v7 vs v6:
-──────────────────────────
-Intensity is now used in two ways:
-
-1. Gate: beams with intensity < min_intensity are rejected entirely.
-   This removes the ~45% of zero-return beams that were silently
-   accumulating occupancy probability for non-detections.
-
-2. Weight: the alpha increment is scaled by a blended depth+intensity
-   weight:
-       I_norm       = clip(intensity / intensity_scale, 0, 1)
-       w_combined   = w_depth * (0.5 + 0.5 * I_norm)
-   Hard targets (high acoustic reflectivity) accumulate probability
-   faster than soft sediment returns.
-
-New parameters:
-  min_intensity    (default  50.0)  -- gate threshold (raw uint16 units)
-  intensity_scale  (default 2000.0) -- normalization reference
-                                       (~typical max for seabed returns)
 
 WHAT CHANGED IN v6 vs v5:
 ──────────────────────────
@@ -39,6 +19,14 @@ Fix: replace dict[key -> np.array] with TWO preallocated parallel arrays:
 to_numpy() now just slices keys_arr[:n] and data_arr[:n] — zero copies,
 views only.  Measured speedup: 49 ms -> 0.9 ms  (54x).
 
+The write loop (0.75 ms/scan) is already fast enough for 10 Hz and stays
+as a Python loop since the number of active voxels per scan is small (~200).
+
+Full timing @ 10 Hz (100 ms budget):
+  insert_scan  ~1 ms
+  to_numpy     ~1 ms
+  Total        ~2 ms   →  headroom for surface mesh extraction later
+
 PHILOSOPHY (unchanged from v5):
 ────────────────────────────────
 Only sonar endpoint (hit) voxels are stored.
@@ -46,9 +34,9 @@ Free-space and lateral blur voxels are dropped entirely.
 beta is fixed at beta_min after first hit — acts as prior strength only.
 p = alpha / (alpha + beta_min) → 1.0 as hit count grows.
 
-File format (.sonarmap, little-endian) — backward-compatible with v3-v6:
+File format (.sonarmap, little-endian) — backward-compatible with v3-v5:
   [0]   magic     uint32   0x534F4E52
-  [4]   version   uint8    7
+  [4]   version   uint8    6
   [5]   voxel_sz  float32
   [9]   n_voxels  uint64
   [17]  per voxel: key(i64) alpha(f32) beta(f32) sumI(f32) hits(f32)  = 24 bytes
@@ -79,7 +67,7 @@ _BITS    = 21
 _MASK    = np.int64((1 << _BITS) - 1)
 _SIGN    = 1 << (_BITS - 1)
 _MAGIC   = 0x534F4E52   # "SONR"
-_VERSION = 7
+_VERSION = 6
 
 _RECORD_DTYPE = np.dtype([
     ('key',   np.int64),
@@ -279,7 +267,7 @@ class VoxelStore:
         magic, version, file_vs, n_voxels = struct.unpack_from('<IBfQ', header, 0)
         if magic != _MAGIC:
             raise ValueError(f'Bad magic 0x{magic:08X}')
-        if version not in (2, 3, 4, 5, 6, 7):
+        if version not in (2, 3, 4, 5, 6):
             raise ValueError(f'Unsupported version {version}')
         if abs(file_vs - voxel_size) > 1e-5:
             raise ValueError(
@@ -332,24 +320,17 @@ class ProbabilisticVoxelMap:
 
     alpha accumulates evidence with each sonar return.
     beta is fixed at beta_min — acts only as prior strength.
-
-    v7: intensity gate + weight applied before writing to store.
-    Beams below min_intensity are rejected. Surviving beams are weighted
-    by a blend of depth-Gaussian and normalised intensity:
-        w = w_depth * (0.5 + 0.5 * clip(intensity / intensity_scale, 0, 1))
     """
 
     def __init__(
         self,
-        voxel_size:       float,
-        seabed_depth_h:   float,
-        hh:               float,
-        lambda_hit:       float,
-        sigma_r_m:        float,
-        alpha_min:        float = 1e-3,
-        beta_min:         float = 1e-3,
-        min_intensity:    float = 50.0,
-        intensity_scale:  float = 2000.0,
+        voxel_size:      float,
+        seabed_depth_h:  float,
+        hh:              float,
+        lambda_hit:      float,
+        sigma_r_m:       float,
+        alpha_min:       float = 1e-3,
+        beta_min:        float = 1e-3,
     ):
         self.vs     = float(voxel_size)
         self.inv_vs = 1.0 / self.vs
@@ -360,10 +341,8 @@ class ProbabilisticVoxelMap:
         self.d_hi    = self.mu_d + self.hh
         self.sigma_d = self.hh / math.sqrt(12.0) if hh > 1e-9 else 1e-6
 
-        self.lambda_hit      = float(lambda_hit)
-        self.sigma_r         = max(float(sigma_r_m), 1e-6)
-        self.min_intensity_  = float(min_intensity)
-        self.intensity_scale_= max(float(intensity_scale), 1.0)
+        self.lambda_hit = float(lambda_hit)
+        self.sigma_r    = max(float(sigma_r_m), 1e-6)
 
         self._store = VoxelStore(alpha_min, beta_min)
 
@@ -424,24 +403,11 @@ class ProbabilisticVoxelMap:
         dd  = d_ep[in_band] - self.mu_d
         w_d[in_band] = np.exp(-0.5 * (dd / self.sigma_d) ** 2)
 
-        # ── Intensity gate + weight ───────────────────────────────────────
-        in_band_inten = inten[in_band]
-        strong_enough = in_band_inten >= self.min_intensity_
-        if not np.any(strong_enough):
-            return
-
-        active_keys  = endpoint_keys[in_band][strong_enough]
-        active_w_d   = w_d[in_band][strong_enough]
-        active_inten = in_band_inten[strong_enough]
-
-        I_norm     = np.clip(active_inten / self.intensity_scale_, 0.0, 1.0)
-        w_combined = active_w_d * (0.5 + 0.5 * I_norm)
-
         # ── Write to store ────────────────────────────────────────────────
         self._store.update_hits(
-            active_keys,
-            self.lambda_hit * w_combined,
-            active_inten,
+            endpoint_keys[in_band],
+            self.lambda_hit * w_d[in_band],
+            inten[in_band],
         )
 
     # ── spatial pruning ───────────────────────────────────────────────────────
@@ -540,10 +506,6 @@ class ProbSonarMapNode(Node):
         # Sonar range uncertainty
         self.declare_parameter('sigma_r_m', 0.0065)
 
-        # Intensity gate + weight (v7)
-        self.declare_parameter('min_intensity',   50.0)
-        self.declare_parameter('intensity_scale', 2000.0)
-
         # Persistence
         self.declare_parameter('load_path',            '')
         self.declare_parameter('save_path',
@@ -572,15 +534,13 @@ class ProbSonarMapNode(Node):
         self.prune_every_n_scans_  = max(1, int(gp('prune_every_n_scans')))
 
         self.voxel_map_ = ProbabilisticVoxelMap(
-            voxel_size      = voxel_size,
-            seabed_depth_h  = seabed_h,
-            hh              = hh,
-            lambda_hit      = float(gp('lambda_hit')),
-            sigma_r_m       = float(gp('sigma_r_m')),
-            alpha_min       = float(gp('alpha_min')),
-            beta_min        = float(gp('beta_min')),
-            min_intensity   = float(gp('min_intensity')),
-            intensity_scale = float(gp('intensity_scale')),
+            voxel_size     = voxel_size,
+            seabed_depth_h = seabed_h,
+            hh             = hh,
+            lambda_hit     = float(gp('lambda_hit')),
+            sigma_r_m      = float(gp('sigma_r_m')),
+            alpha_min      = float(gp('alpha_min')),
+            beta_min       = float(gp('beta_min')),
         )
 
         self.vehicle_pose_ = None
@@ -631,13 +591,11 @@ class ProbSonarMapNode(Node):
             self._do_load(load_path)
 
         self.get_logger().info(
-            f'ProbSonarMap v7 | '
+            f'ProbSonarMap v6 | '
             f'voxel={voxel_size}m | window={self.window_radius_}m | '
             f'depth_band=[{seabed_h-hh:.2f}, {seabed_h+hh:.2f}]m | '
             f'lambda_hit={float(gp("lambda_hit"))} | '
             f'threshold={self.pub_threshold_} | min_hits={self.min_hits_} | '
-            f'min_intensity={float(gp("min_intensity"))} | '
-            f'intensity_scale={float(gp("intensity_scale"))} | '
             f'rate={publish_rate}Hz'
         )
 

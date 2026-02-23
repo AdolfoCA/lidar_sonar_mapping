@@ -7,7 +7,7 @@ Usage examples:
   ros2 launch <package> static_tf_mari_rov.launch.py
 
   # Override the transforms file at launch time
-  ros2 launch <package> static_tf_mari_rov.launch.py transforms_file:=/path/to/transforms.yaml
+  ros2 launch <package> static_tf_mari_rov.launch.py transforms_path:=/path/to/transforms.yaml
 
 Replace <package> with the package name that contains/installs the `static_tf_publisher_node`
 (for example, `static_tf_publisher_ros2` if that's the package name in your workspace).
@@ -31,10 +31,10 @@ def generate_launch_description():
         "transforms.yaml",
     )
 
-    transforms_file = LaunchConfiguration("transforms_file")
+    transforms_path = LaunchConfiguration("transforms_path")
 
     declare_transforms_arg = DeclareLaunchArgument(
-        "transforms_file",
+        "transforms_path",
         default_value=default_transforms,
         description="Path to transforms yaml file to load",
     )
@@ -45,7 +45,7 @@ def generate_launch_description():
         name="tf_static_publisher",
         output="screen",
         # Provide both a parameter and a YAML file path so the node can accept either style
-        parameters=[{"transforms_file": transforms_file}],
+        parameters=[{"transforms_path": transforms_path}],
     )
 
     return LaunchDescription(

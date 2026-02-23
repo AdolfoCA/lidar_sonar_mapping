@@ -48,7 +48,7 @@ class SaveMapServer(Node):
         self.current_pose = None
         self.init_captured = False
         
-        self.output_dir = Path.home() / 'ros2_ws' / 'saved_maps'
+        self.output_dir = Path.home() / 'ros2_ws' / 'saved_maps' / 'PCD'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.get_logger().info('='*50)
@@ -156,34 +156,29 @@ class SaveMapServer(Node):
         return response
 
     def export_kdtree(self, timestamp):
-        """Export FAST-LIO2 KD-tree to PCD"""
+        """Export FAST-LIO2 KD-tree to PCD via ros2 service CLI"""
+        import subprocess
         try:
-            import time
+            result = subprocess.run(
+                ['ros2', 'service', 'call', '/export_kdtree_pcd', 'std_srvs/srv/Trigger', '{}'],
+                capture_output=True, text=True, timeout=10.0
+            )
+            self.get_logger().info(f'KD-tree service stdout: "{result.stdout}"')
+            self.get_logger().info(f'KD-tree service stderr: "{result.stderr}"')
             
-            client = self.create_client(Trigger, '/export_kdtree_pcd')
-            
-            if not client.wait_for_service(timeout_sec=2.0):
-                self.get_logger().warn('KD-tree export service not available')
-                return None
-            
-            request = Trigger.Request()
-            future = client.call_async(request)
-            
-            start_time = time.time()
-            while not future.done() and (time.time() - start_time) < 10.0:
-                time.sleep(0.1)
-            
-            if future.done():
-                result = future.result()
-                if result.success and 'to:' in result.message:
-                    return result.message.split('to:')[1].strip()
-                elif result.success:
-                    return result.message
-                    
+            if 'success=True' in result.stdout:
+                # Parse path from response message
+                if 'to:' in result.stdout:
+                    # Extract path between 'to:' and the closing quote/newline
+                    path = result.stdout.split('to:')[1].split("'")[0].strip()
+                    return path
+                return 'kdtree_exported'
+        except subprocess.TimeoutExpired:
+            self.get_logger().warn('KD-tree export timed out')
         except Exception as e:
             self.get_logger().error(f'Error exporting KD-tree: {e}')
-        
-        return None
+            return None
+
 
     def save_pcd(self, filename, points):
         """Save point cloud to PCD file - MATLAB compatible ASCII format"""
@@ -221,4 +216,4 @@ def main(args=None):
 if __name__ == '__main__':
     main()
 
-## ros2 service call /service_name std_srvs/srv/Trigger {}
+## ros2 service call /save_map std_srvs/srv/Trigger {}

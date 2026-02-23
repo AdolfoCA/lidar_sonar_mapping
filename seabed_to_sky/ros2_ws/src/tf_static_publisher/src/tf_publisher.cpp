@@ -32,7 +32,7 @@ public:
     loadTransformsFromYAML(transforms_path);
 
     tf_static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
-    timer_ = this->create_wall_timer(1000ms, std::bind(&StaticTFPublisher::publishTransforms, this));
+    publishTransforms(); 
   }
 
 private:
