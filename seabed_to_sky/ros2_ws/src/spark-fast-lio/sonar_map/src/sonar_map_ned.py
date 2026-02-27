@@ -154,13 +154,13 @@ import numpy.lib.recfunctions as rfn
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Geometry
-VOXEL_SIZE           = 0.10     # [m] voxel side length
+VOXEL_SIZE           = 0.05     # [m] voxel side length
 
 # ── ADAPTIVE SEABED ESTIMATOR (Kalman filter) ─────────────────────────────────
 # The seabed depth h and seabed intensity I_seabed are estimated online.
 # You only need to set the prior means, uncertainties, and process noise.
 
-TALLEST_OBJECT       = 0.8      # [m] ONLY fixed parameter — height of tallest object
+TALLEST_OBJECT       = 0.5      # [m] ONLY fixed parameter — height of tallest object
 
 # Prior on seabed depth h  (depth below USV, positive downward)
 H_PRIOR_MEAN         = 2.5      # [m]   initial guess — observed mean depth ~1.84m, max ~4.8m
@@ -187,14 +187,14 @@ W_MIN                = 0.01     # min column weight to create a voxel (cuts Gaus
 INTENSITY_SCALE      = 2500.0   # [uint16] max expected intensity (observed max ~2200)
 
 # ── BAYESIAN MAP UPDATE ───────────────────────────────────────────────────────
-LAMBDA_HIT           = 0.3      # total α increment per hit beam
+LAMBDA_HIT           = 0.1      # total α increment per hit beam
 LAMBDA_MISS          = 0.1      # total β increment per miss beam
 
 ALPHA_MIN            = 1e-3
 BETA_MIN             = 1e-3
 
-PUB_THRESHOLD        = 0.10      # min p to publish; voxels below this are deleted
-MIN_HITS             = 2        # min hit count to publish
+PUB_THRESHOLD        = 0.70      # min p to publish; voxels below this are deleted
+MIN_HITS             = 1        # min hit count to publish
 
 # ── SPATIAL WINDOW ────────────────────────────────────────────────────────────
 WINDOW_RADIUS        = 200.0    # [m]
