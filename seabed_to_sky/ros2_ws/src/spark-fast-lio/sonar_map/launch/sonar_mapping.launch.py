@@ -8,7 +8,6 @@ Launches the sonar mapping pipeline:
   3. save_map        — saves map to PCD on request
 
 To swap sonar at launch time:
-  ros2 launch sonar_map sonar_mapping.launch.py sonar_frame:=oculus
   ros2 launch sonar_map sonar_mapping.launch.py sonar_frame:=blueview
 """
 

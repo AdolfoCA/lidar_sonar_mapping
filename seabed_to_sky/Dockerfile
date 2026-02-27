@@ -49,6 +49,7 @@ RUN apt update -q \
     ros-humble-perception-pcl \
     pybind11-dev \
     && apt clean \
+    apt install ros-humble-foxglove-bridge \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Python dependencies (requirements.txt + explicit packages from second Dockerfile)
