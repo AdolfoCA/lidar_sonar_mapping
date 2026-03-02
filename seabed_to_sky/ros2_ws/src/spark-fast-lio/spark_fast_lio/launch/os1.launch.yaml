@@ -20,7 +20,7 @@ launch:
         - name: "common.lidar_frame"
           value: "os_lidar"
         - name: "common.imu_frame"
-          value: "os_imu"
+          value: "os_imu"   
         - name: "gravity_alignment.enable_gravity_alignment"
           value: false
 

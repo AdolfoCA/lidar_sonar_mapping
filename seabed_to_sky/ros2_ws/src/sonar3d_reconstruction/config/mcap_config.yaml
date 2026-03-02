@@ -1,7 +1,0 @@
-topic:
-  remove:
-    - /oculus/drawn_sonar_osd
-    - /blueview/drawn_sonar_osd
-    - /blueview_blueview_message_cart
-time_start: 1729587333.399705599
-time_end: 1729587362.586650786

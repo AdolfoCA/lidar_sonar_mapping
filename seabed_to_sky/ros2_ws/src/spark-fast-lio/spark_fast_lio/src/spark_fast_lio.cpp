@@ -1213,7 +1213,7 @@ if (ikd_tree_.Root_Node == nullptr) {
 
 // Create output path
 std::string output_dir = save_dir_.empty() ? 
-    std::string(std::getenv("HOME")) + "/spark-fast-lio/saved_maps" : save_dir_;
+    std::string(std::getenv("HOME")) + "/ros2_ws/saved_maps/PCD" : save_dir_;
 
 // Create directory if it doesn't exist
 std::filesystem::create_directories(output_dir);

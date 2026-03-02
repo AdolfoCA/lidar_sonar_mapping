@@ -10,8 +10,13 @@ def generate_launch_description():
 
     # Define the parameter file paths
     params_edge_horizontal = os.path.join(
-        package_dir, "config", "params_edge_horizontal.yaml"
+        package_dir, "config", "params_edge_blueview.yaml"
     )
+
+    #params_edge_horizontal = os.path.join(
+    #    package_dir, "config", "params_edge_oculus.yaml"
+    #)
+    
     params_edge_vertical = os.path.join(
         package_dir, "config", "params_edge_vertical.yaml"
     )
