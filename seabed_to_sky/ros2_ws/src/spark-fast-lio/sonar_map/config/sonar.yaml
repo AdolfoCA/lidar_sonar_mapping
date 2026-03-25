@@ -24,13 +24,54 @@ sonar_map_ned:
     output_topic:   "sonar_map"
     odom_topic:     "odometry"
     map_frame:      "odom"
-    voxel_size:     0.01
-    window_radius:  50.0
-    publish_rate:   2.0
-    source_id:      0
+    voxel_size:          0.05
+    seabed_voxel_size:   0.5      # [m] coarse voxel size for seabed (must be >= voxel_size)
+    window_radius:       200.0
+    mission_log_path:    "/home/rosdev/ros2_ws/saved_maps/mission"   # dir for mission_log.csv
+    pcd_save_dir:        "/home/rosdev/ros2_ws/saved_maps/PCD"       # dir for sonar_map.pcd and bathy_map.pcd
+    global_publish_rate: 0.5    # [Hz] full accumulated map
+    source_id:           0.
 
     #input_topic: "sonar_scan"
     #output_topic: "sonar_map"
     #map_frame: "odom"
     #max_points: 10000000
     #publish_rate: 1.0
+
+    # ── Bathymetry map ──────────────────────────────────────────────────────
+    # Sparse 2-D Kalman-filter map estimating seabed depth per (x,y) cell.
+    # Drives the occupancy probability of seabed voxels via Gaussian CDF.
+    # All noise values are standard deviations in metres.
+
+    # ── Object update ────────────────────────────────────────────────────────
+    # Returns with I >= I_object are classified as objects resting on the seabed.
+    # Region 1 (body):  flat α from estimated seabed_z UP TO zi, α = λ_hit·(I/I_object)
+    # Region 2 (above): Gaussian-weighted α from zi upward (sigma_object controls spread)
+    # Semantic label = 1.0 (OBJECT) → occupancy from Beta-Bernoulli, not Gaussian CDF.
+    lidar_topic:    "/cloud_registered"   # kept for future use
+    epsilon_struct: 0.5                   # [m] XY radius for LiDAR neighbourhood
+    ellipsoid_a:    1.0                   # [m] USV exclusion ellipsoid semi-axis X
+    ellipsoid_b:    1.0                   # [m] USV exclusion ellipsoid semi-axis Y
+    ellipsoid_c:    5.0                   # [m] USV exclusion ellipsoid semi-axis Z
+    lambda_structure: 1.5      # structure threshold: I > lambda_structure * mu_I_seabed (+ LiDAR support)
+    lambda_object:    2.5      # object threshold:    I > lambda_object * mu_I_seabed (no LiDAR support)
+    sigma_object:     0.15     # [m] Gaussian sigma above zi (uncertain object height)
+
+    # ── Bathymetry map ──────────────────────────────────────────────────────
+    # Cell size [m] — should be coarser than voxel_size to aggregate returns.
+    bathy_cell_size:    0.5
+
+    # Initial depth guess for new cells [m, ENU frame: negative = below vehicle].
+    # Set close to -(expected seabed depth below USV).
+    bathy_z_prior_mean: -2.5
+
+    # Initial depth uncertainty [m]. Wide prior — let the data converge.
+    bathy_z_prior_std:  0.5
+
+    # Process noise [m]: how much the seabed depth can change between updates.
+    # Keep small for a static seabed.
+    bathy_q_z:          0.01
+
+    # Measurement noise [m]: sonar range precision per return.
+    bathy_r_z:          0.05
+

@@ -39,9 +39,14 @@ install(PROGRAMS src/norbit_scan_ned.py
   RENAME norbit_scan_ned
 )
 
-# Install launch files
+
+# Install launch and config files
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 ament_package()
