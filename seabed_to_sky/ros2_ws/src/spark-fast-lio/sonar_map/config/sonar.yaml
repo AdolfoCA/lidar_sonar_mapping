@@ -57,6 +57,44 @@ sonar_map_ned:
     lambda_object:    2.5      # object threshold:    I > lambda_object * mu_I_seabed (no LiDAR support)
     sigma_object:     0.15     # [m] Gaussian sigma above zi (uncertain object height)
 
+sdf_fitting_node:
+  ros__parameters:
+    structure_input:          structure_clusters
+    object_input:             object_clusters
+    structure_refined_topic:  structure_refined
+    object_refined_topic:     object_refined
+    map_frame:                odom
+    voxel_size:               0.05    # [m] must match sonar_map_ned
+    truncation_distance:      0.15    # [m] SDF clamp distance
+    smoothness_weight:        0.5     # λ — Laplacian smoothness weight
+    min_cluster_voxels:       10
+
+object_cluster_node:
+  ros__parameters:
+    input_topic:     sonar_map
+    structure_topic: structure_clusters
+    object_topic:    object_clusters
+    map_frame:       odom
+    bundle_size:     200           # trigger DBSCAN every N new classified voxels
+
+    # STRUCTURE — two-stage DBSCAN
+    # Stage 1 (outlier rejection): keep only voxels with at least one neighbour
+    #   within outlier_eps. Tune to ~3-4 × voxel_size (voxel_size=0.05 m → 0.15-0.2 m)
+    structure_outlier_eps:         0.15
+    structure_outlier_min_samples: 3
+    # Stage 2 (cluster grouping): connect surviving clean voxels into structures.
+    #   Tune up if the structure is still fragmented in the output.
+    structure_cluster_eps:         0.5
+    structure_cluster_min_samples: 5
+    structure_min_cluster_size:    20
+
+    # OBJECT — two-stage DBSCAN
+    object_outlier_eps:            0.06    # [m] just over 1 voxel diagonal; removes lone voxels
+    object_outlier_min_samples:    3
+    object_cluster_eps:            0.2
+    object_cluster_min_samples:    5
+    object_min_cluster_size:       10
+
     # ── Bathymetry map ──────────────────────────────────────────────────────
     # Cell size [m] — should be coarser than voxel_size to aggregate returns.
     bathy_cell_size:    0.5

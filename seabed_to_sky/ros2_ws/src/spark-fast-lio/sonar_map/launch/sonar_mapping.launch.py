@@ -81,6 +81,30 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
+    # 4. object_cluster_node                                              #
+    # ------------------------------------------------------------------ #
+
+    node_object_cluster = Node(
+        package='sonar_map',
+        executable='object_cluster_node',
+        name='object_cluster_node',
+        output='screen',
+        parameters=[config],
+    )
+
+    # ------------------------------------------------------------------ #
+    # 5. sdf_fitting_node                                                 #
+    # ------------------------------------------------------------------ #
+
+    node_sdf_fitting = Node(
+        package='sonar_map',
+        executable='sdf_fitting_node',
+        name='sdf_fitting_node',
+        output='screen',
+        parameters=[config],
+    )
+
+    # ------------------------------------------------------------------ #
     # Assemble                                                            #
     # ------------------------------------------------------------------ #
 
@@ -90,4 +114,6 @@ def generate_launch_description():
         node_sonar_scan,
         node_sonar_map,
         node_save_map,
+        node_object_cluster,
+        node_sdf_fitting,
     ])

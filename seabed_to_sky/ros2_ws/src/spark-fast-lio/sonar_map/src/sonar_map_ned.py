@@ -1445,15 +1445,17 @@ class ProbabilisticVoxelMap:
             (iy_u + 0.5) * vs,
             (iz_u + 0.5) * vs,
             p,
-            d[:, 2] / cnt,
+            d[:, 2] / cnt,    # intensity mean
             d[:, 4],          # semantic
+            d[:, 0],          # alpha  (Beta-Bernoulli hit count)
+            d[:, 1],          # beta   (Beta-Bernoulli miss count)
         ]).astype(np.float32)
 
     def to_numpy(self, min_hits: int,
                  cx: float = None, cy: float = None,
                  radius: float = None) -> np.ndarray:
         """
-        Return (N,6) float32: [x, y, z, occupancy_prob, intensity_mean, semantic].
+        Return (N,8) float32: [x, y, z, occupancy_prob, intensity_mean, semantic, alpha, beta].
 
         occupancy_prob semantics:
           SEABED    (0.0) — Gaussian CDF: p = Φ((z_hi-mu_z)/σ_z) - Φ((z_lo-mu_z)/σ_z)
@@ -1629,6 +1631,8 @@ class ProbSonarMapNode(Node):
             PointField(name='intensity', offset=16, datatype=PointField.FLOAT32, count=1),
             PointField(name='source',    offset=20, datatype=PointField.FLOAT32, count=1),
             PointField(name='semantic',  offset=24, datatype=PointField.FLOAT32, count=1),
+            PointField(name='alpha',     offset=28, datatype=PointField.FLOAT32, count=1),
+            PointField(name='beta',      offset=32, datatype=PointField.FLOAT32, count=1),
         ]
 
         self.map_pub_       = self.create_publisher(PointCloud2, gp('output_topic'), 10)
@@ -1926,12 +1930,14 @@ class ProbSonarMapNode(Node):
         return h
 
     def _pts6_to_cloud(self, pts6: np.ndarray, header: Header) -> PointCloud2:
-        """Convert (N,6) [x,y,z,prob,intensity,semantic] to PointCloud2 with source field."""
+        """Convert (N,8) [x,y,z,prob,intensity,semantic,alpha,beta] to PointCloud2."""
         n   = pts6.shape[0]
-        out = np.empty((n, 7), dtype=np.float32)
-        out[:, :5] = pts6[:, :5]      # x,y,z,prob,intensity
+        out = np.empty((n, 9), dtype=np.float32)
+        out[:, :5] = pts6[:, :5]      # x, y, z, prob, intensity
         out[:, 5]  = self.source_id_  # source
         out[:, 6]  = pts6[:, 5]       # semantic
+        out[:, 7]  = pts6[:, 6]       # alpha
+        out[:, 8]  = pts6[:, 7]       # beta
         return pc2.create_cloud(header, self._fields, out)
 
     def _publish_global(self):

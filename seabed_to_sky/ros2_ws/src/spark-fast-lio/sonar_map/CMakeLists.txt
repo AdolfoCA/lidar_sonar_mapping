@@ -28,7 +28,17 @@ install(PROGRAMS src/save_map.py
   RENAME save_map
 )
 
-# norbit mapping 
+install(PROGRAMS src/object_cluster_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME object_cluster_node
+)
+
+install(PROGRAMS src/sdf_fitting_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME sdf_fitting_node
+)
+
+# norbit mapping
 install(PROGRAMS src/norbit_map_ned.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME norbit_map_ned
