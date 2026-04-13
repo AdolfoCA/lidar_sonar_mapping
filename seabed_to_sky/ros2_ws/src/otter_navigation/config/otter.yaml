@@ -1,0 +1,31 @@
+# Odometry to NMEA Converter Configuration
+
+# Origin coordinates (reference point for local ENU frame)
+# These define where (0, 0) in your odometry frame maps to in GPS coordinates
+origin:
+  latitude: 55.7637    # degrees (decimal)
+  longitude: 12.5675   # degrees (decimal)
+
+# Network settings for TCP connection to autopilot
+network:
+  autopilot_ip: "192.168.1.100"  # IP address of the Otter/Autopilot
+  autopilot_port: 5000            # TCP port to connect to
+
+# Publishing settings
+nmea:
+  publish_rate: 10.0              # Hz (10 messages per second)
+  gps_quality: 1                  # 1 = GPS fix, 0 = no fix (for NMEA GGA sentence)
+  num_satellites: 12              # Number of satellites (for NMEA GGA sentence)
+  hdop: 0.9                       # Horizontal dilution of precision (for NMEA GGA sentence)
+
+# Odometry validation
+# NMEA output is suspended and a warning is logged when any check fails.
+# It resumes automatically once valid data arrives again.
+validation:
+  odom_timeout: 2.0       # [s]  stop sending if no odometry received for this long
+  max_speed_knots: 2.0    # [kn] stop sending if speed exceeds this value (Otter max ~2 kn)
+
+# Logging
+logging:
+  level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
+  log_file: "/tmp/nmea_converter.log"

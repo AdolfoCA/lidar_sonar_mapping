@@ -152,11 +152,15 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   void main();
 
+  void diagnosticCallback();
+
   bool syncPackages(MeasureGroup &meas, bool verbose);
 
   bool isMotionStopped(const V3D &acc_ref, const V3D &acc_curr, const double acc_diff_thr);
 
   void processLidarAndImu(MeasureGroup &Measure);
+
+  void pruneMapToLimit();
 
  private:
   std::mutex buffer_mutex_;
@@ -184,6 +188,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::TimerBase::SharedPtr main_loop_timer_;
+  rclcpp::TimerBase::SharedPtr diag_timer_;
 
   /*** Time Log Variables ***/
   double kdtree_incremental_time_ = 0.0;
@@ -224,6 +229,9 @@ class SPARKFastLIO2 : public rclcpp::Node {
   bool scan_body_pub_en_  = false;
   bool scan_base_pub_en_  = false;
 
+  bool  dynamic_filter_en_        = false;
+  float dynamic_filter_radius_sq_ = 2.25f;  // 1.5 m radius squared
+
   bool verbose_ = false;
   bool pcl_verbose_ = true;
 
@@ -261,6 +269,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
   double filter_size_map_min_     = 0.0;
   double fov_deg_                 = 0.0;
   double cube_len_                = 0.0;
+  int    max_map_points_          = 50000;
   double total_distance_          = 0.0;
   double lidar_end_time_          = 0.0;
   double first_lidar_time_        = 0.0;
@@ -269,6 +278,14 @@ class SPARKFastLIO2 : public rclcpp::Node {
   int time_log_counter_ = 0;
   int scan_count_       = 0;
   int publish_count_    = 0;
+
+  // Diagnostic counters (reset each second)
+  int diag_scans_received_  = 0;
+  int diag_scans_processed_ = 0;
+  int diag_skipped_empty_   = 0;  // feats_undistort_ empty after IMU processing
+  int diag_skipped_sparse_  = 0;  // feats_down_size_ < 5 after voxel downsampling
+  int diag_last_raw_pts_    = 0;  // raw point count from last scan
+  int diag_last_down_pts_   = 0;  // downsampled point count from last scan
 
   int iterCount_                = 0;
   int feats_down_size_          = 0;

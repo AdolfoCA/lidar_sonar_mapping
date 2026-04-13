@@ -1,0 +1,23 @@
+# =============================================================================
+# transforms.yaml
+# Date: 2024-04-08
+# Updated: 2026-04-08
+#
+# the rule is: How is the child frame located relative to the parent frame?
+
+transforms:
+# Sonar Configuration 1: forward-facing, 30° pitch down
+  - frame_id: os_imu
+    child_frame_id: blueview
+    invert: false
+    translation:
+      x: -0.22      
+      y:  0.0    
+      z: -0.42    
+    rotation:
+      x: 0.0          
+      y: 30.0         
+      z: 0.0          
+
+
+

@@ -1,5 +1,6 @@
 #include "spark_fast_lio.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -41,6 +42,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   scan_lidar_pub_en_ = declare_parameter<bool>("publish.scan_lidarframe_pub_en", false);
   scan_body_pub_en_  = declare_parameter<bool>("publish.scan_bodyframe_pub_en", false);
   scan_base_pub_en_  = declare_parameter<bool>("publish.scan_baseframe_pub_en", false);
+
+  dynamic_filter_en_ = declare_parameter<bool>("dynamic_filter.enable", false);
+  {
+    float r = declare_parameter<float>("dynamic_filter.nearby_radius", 1.5f);
+    dynamic_filter_radius_sq_ = r * r;
+  }
+
   export_kdtree_service_ = create_service<std_srvs::srv::Trigger>(
     "/export_kdtree_pcd",
     std::bind(&SPARKFastLIO2::exportKDTreeCallback, this, 
@@ -60,6 +68,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
   filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
   cube_len_            = declare_parameter<double>("cube_side_length", 200.0);
+  max_map_points_      = declare_parameter<int>("max_map_points", 50000);
   det_range_           = declare_parameter<double>("mapping.det_range", 300.0);
   fov_deg_             = declare_parameter<double>("mapping.fov_degree", 360.0);
   gyr_cov_             = declare_parameter<double>("mapping.gyr_cov", 0.1);
@@ -95,31 +104,40 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   auto g_vec = declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});
   g_base_ << g_vec[0], g_vec[1], g_vec[2];
 
-  auto sensor_qos = rclcpp::SensorDataQoS();
-  sub_lidar_      = create_subscription<sensor_msgs::msg::PointCloud2>(
+  // LiDAR: depth=1 — only the latest scan matters; stale scans waste memory and CPU.
+  auto lidar_qos = rclcpp::SensorDataQoS().keep_last(1);
+  sub_lidar_     = create_subscription<sensor_msgs::msg::PointCloud2>(
       "lidar",
-      sensor_qos,
+      lidar_qos,
       std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1));
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
   sub_lidar_livox_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
       "lidar",
-      sensor_qos,
+      lidar_qos,
       std::bind(&SPARKFastLIO2::livoxLidarCallback, this, std::placeholders::_1));
 #endif
 
-  sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
-      "imu", sensor_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
+  // IMU: keep depth=10 — ALL IMU messages between LiDAR scans must be retained for
+  // correct motion compensation. Dropping IMU data here corrupts the IKF integration.
+  auto imu_qos = rclcpp::SensorDataQoS().keep_last(10);
+  sub_imu_     = create_subscription<sensor_msgs::msg::Imu>(
+      "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
 
   rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
-  pub_cloud_full_  = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
-  pub_cloud_lidar_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_lidar", qos);
-  pub_cloud_body_  = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body", qos);
-  pub_cloud_base_  = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_base", qos);
+  pub_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
+  if (scan_lidar_pub_en_)
+    pub_cloud_lidar_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_lidar", qos);
+  if (scan_body_pub_en_)
+    pub_cloud_body_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body", qos);
+  if (scan_base_pub_en_)
+    pub_cloud_base_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_base", qos);
 
-  pub_odom_                 = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
-  pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
-  path_msg_.header.frame_id = map_frame_;
+  pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
+  if (path_en_) {
+    pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
+    path_msg_.header.frame_id = map_frame_;
+  }
 
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   tf_buffer_      = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -129,6 +147,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   preprocessor_->blind = declare_parameter<double>("preprocess.blind", 0.01);
   preprocessor_->blind_for_human_pilots =
       declare_parameter<double>("preprocess.blind_for_human_pilots", 1.5);
+  preprocessor_->water_level =
+      declare_parameter<double>("preprocess.water_level", 0.0);
   preprocessor_->lidar_type =
       declare_parameter<int>("preprocess.lidar_type", static_cast<int>(AVIA));
   preprocessor_->N_SCANS = declare_parameter<int>("preprocess.scan_line", 16);
@@ -185,10 +205,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   main_loop_timer_ =
       create_wall_timer(std::chrono::milliseconds(1), std::bind(&SPARKFastLIO2::main, this));
 
+  diag_timer_ =
+      create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::diagnosticCallback, this));
+
   if ((preprocessor_->point_filter_num != 1 && point_filter_num_ > 1)) {
-    RCLCPP_WARN(this->get_logger(),
-                "Points may be too sparse. Set 'preprocessor_->point_filter_num = 1' and tune "
-                "'point_filter_num_' instead.");
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Points may be too sparse. Set 'preprocessor_->point_filter_num = 1' and tune "
+                 "'point_filter_num_' instead.");
   }
 
   // Ouster configurable field names
@@ -201,7 +224,7 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   preprocessor_->ouster_fields.ambient_field =
   declare_parameter<std::string>("preprocess.field_name_ambient", "ambient");
 
-  RCLCPP_INFO(this->get_logger(), "SPARKFastLIO2 constructed");
+  RCLCPP_DEBUG(this->get_logger(), "SPARKFastLIO2 constructed");
 }
 
 // Outputs rotation matrix that aligns a to b, i.e., R such that R * g_a = g_b
@@ -241,10 +264,10 @@ M3D SPARKFastLIO2::computeRelativeRotation(const Eigen::Vector3d &g_a, const Eig
 }
 
 bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt_base) {
-  RCLCPP_INFO(this->get_logger(),
-              "Looking up transform from %s -> %s",
-              base_frame_.c_str(),
-              lidar_frame_.c_str());
+  RCLCPP_DEBUG(this->get_logger(),
+               "Looking up transform from %s -> %s",
+               base_frame_.c_str(),
+               lidar_frame_.c_str());
 
   const auto lookup_time = rclcpp::Time(0);
   bool has_transform     = false;
@@ -256,7 +279,7 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt
   while (rclcpp::ok()) {
     if (tf_buffer_->canTransform(
             base_frame_, lidar_frame_, lookup_time, tf2::durationFromSec(0.0), &err_str)) {
-      RCLCPP_INFO_STREAM(this->get_logger(), "\033[1;32mExtrinsics detected.\033[1;0m");
+      RCLCPP_DEBUG_STREAM(this->get_logger(), "Extrinsics detected.");
       has_transform = true;
       break;
     }
@@ -270,12 +293,9 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt
       break;
     }
 
-    RCLCPP_WARN_STREAM_SKIPFIRST_THROTTLE(get_logger(),
-                                          *clock_,
-                                          5000,
-                                          "Waiting for transform from '" << lidar_frame_ << "' to '"
-                                                                         << base_frame_
-                                                                         << "': " << err_str);
+    RCLCPP_DEBUG_STREAM(get_logger(),
+                        "Waiting for transform from '" << lidar_frame_ << "' to '"
+                                                       << base_frame_ << "': " << err_str);
 
     rate.sleep();
   }
@@ -296,18 +316,18 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt
 
   lidar_R_wrt_base = q.toRotationMatrix();
 
-  RCLCPP_INFO(this->get_logger(),
-              "Translation: [%.3f, %.3f, %.3f]",
-              lidar_T_wrt_base(0),
-              lidar_T_wrt_base(1),
-              lidar_T_wrt_base(2));
+  RCLCPP_DEBUG(this->get_logger(),
+               "Translation: [%.3f, %.3f, %.3f]",
+               lidar_T_wrt_base(0),
+               lidar_T_wrt_base(1),
+               lidar_T_wrt_base(2));
 
-  RCLCPP_INFO(this->get_logger(),
-              "Rotation (Quaternion): [%.3f, %.3f, %.3f, %.3f]",
-              q.x(),
-              q.y(),
-              q.z(),
-              q.w());
+  RCLCPP_DEBUG(this->get_logger(),
+               "Rotation (Quaternion): [%.3f, %.3f, %.3f, %.3f]",
+               q.x(),
+               q.y(),
+               q.z(),
+               q.w());
 
   return has_transform;
 }
@@ -389,6 +409,7 @@ void SPARKFastLIO2::collectRemovedPoints() {
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg) {
   std::lock_guard<std::mutex> lk(buffer_mutex_);
   scan_count_++;
+  diag_scans_received_++;
   rclcpp::Time msg_time(msg.header.stamp.sec, msg.header.stamp.nanosec, RCL_ROS_TIME);
 
   if (msg_time < last_lidar_timestamp_) {
@@ -423,17 +444,17 @@ void SPARKFastLIO2::livoxLiDARCallback(
 
   const auto diff_s = std::abs((last_imu_timestamp_ - last_lidar_timestamp_).seconds());
   if (!time_sync_en_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty()) {
-    RCLCPP_WARN_STREAM(this->get_logger(),
-                       "IMU and LiDAR not Synced, IMU time: "
-                           << last_imu_timestamp_.nanoseconds()
-                           << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
+    RCLCPP_DEBUG_STREAM(this->get_logger(),
+                        "IMU and LiDAR not Synced, IMU time: "
+                            << last_imu_timestamp_.nanoseconds()
+                            << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
   }
 
   if (time_sync_en_ && !timediff_set_flg && diff_s > 1.0 && !imu_buffer.empty()) {
     timediff_set_flg        = true;
     timediff_lidar_wrt_imu_ = last_lidar_timestamp_.nanseconds() + static_cast<int64_t>(1.0e8) -
                               last_imu_timestamp_.nanoseconds();
-    RCLCPP_INFO_STREAM(
+    RCLCPP_DEBUG_STREAM(
         this->get_logger(),
         "Self sync IMU and LiDAR, time diff is " << timediff_lidar_wrt_imu_ << "[ns]");
   }
@@ -461,10 +482,10 @@ void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
   }
 
   if (stamp < last_imu_timestamp_) {
-    RCLCPP_WARN_STREAM(get_logger(),
-                       "IMU loopback, clearing buffers (previous: "
-                           << last_imu_timestamp_.nanoseconds()
-                           << " vs. received: " << stamp.nanoseconds() << " [ns]");
+    RCLCPP_ERROR_STREAM(get_logger(),
+                        "IMU loopback, clearing buffers (previous: "
+                            << last_imu_timestamp_.nanoseconds()
+                            << " vs. received: " << stamp.nanoseconds() << " [ns]");
     imu_buffer_.clear();
     kf_for_preintegration_.reset();
   }
@@ -578,7 +599,7 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
 
   if (effect_feat_num_ < 1) {
     ekfom_data.valid = false;
-    RCLCPP_WARN(this->get_logger(), "No Effective Points!");
+    RCLCPP_DEBUG(this->get_logger(), "No Effective Points!");
     return;
   }
 
@@ -688,6 +709,16 @@ void SPARKFastLIO2::mapIncremental() {
     // transform to world frame
     pointBodyToWorld(
         &(feats_down_body_->points[i]), &(feats_down_world_->points[i]), latest_state_);
+
+    // Dynamic object filter: a point that lies within an already-mapped region
+    // but does not fit the local plane model contradicts the static map — it is
+    // most likely a moving object.  Skip it so it never enters the iKD-tree.
+    if (dynamic_filter_en_ && flg_EKF_inited_ && !nearest_points_[i].empty()) {
+      float nn_sq = calc_dist(nearest_points_[i][0], feats_down_world_->points[i]);
+      if (nn_sq < dynamic_filter_radius_sq_ && !point_selected_surf_[i]) {
+        continue;
+      }
+    }
 
     // decide if we need to add to map
     if (!nearest_points_[i].empty() && flg_EKF_inited_) {
@@ -916,6 +947,40 @@ void SPARKFastLIO2::main() {
   }
 }
 
+void SPARKFastLIO2::diagnosticCallback() {
+  const int total_skipped = diag_skipped_empty_ + diag_skipped_sparse_;
+
+  // Odometry position
+  const auto &pos = latest_state_.pos;
+
+  // LiDAR/IMU buffer backlog (lock briefly to read sizes)
+  size_t lidar_buf_size, imu_buf_size;
+  {
+    std::lock_guard<std::mutex> lk(buffer_mutex_);
+    lidar_buf_size = lidar_buffer_.size();
+    imu_buf_size   = imu_buffer_.size();
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "[DIAG] scans: recv=%d proc=%d skip=%d | "
+              "buf: lidar=%zu imu=%zu | "
+              "map_pts=%d | "
+              "pos=(%.2f, %.2f)",
+              diag_scans_received_,
+              diag_scans_processed_,
+              total_skipped,
+              lidar_buf_size,
+              imu_buf_size,
+              ikd_tree_.size(),
+              pos(0), pos(1));
+
+  // Reset per-second counters
+  diag_scans_received_  = 0;
+  diag_scans_processed_ = 0;
+  diag_skipped_empty_   = 0;
+  diag_skipped_sparse_  = 0;
+}
+
 PoseStruct SPARKFastLIO2::transformPoseWrtBaseFrame(const state_ikfom &state) const {
   static const Eigen::Matrix3d offset_R_B_I = state.offset_R_L_I * lidar_R_wrt_base_.inverse();
   static const Eigen::Vector3d offset_T_B_I =
@@ -943,7 +1008,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose) {
 
     // To only print out when changes occur
     if ((num_lidar_prev != num_lidar_curr) || (num_imu_prev != num_imu_curr)) {
-      RCLCPP_INFO(this->get_logger(), "%lu vs. %lu", num_lidar_curr, num_imu_curr);
+      RCLCPP_DEBUG(this->get_logger(), "%lu vs. %lu", num_lidar_curr, num_imu_curr);
       num_lidar_prev = num_lidar_curr;
       num_imu_prev   = num_imu_curr;
     }
@@ -963,11 +1028,11 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose) {
     } else {
       scan_num_++;
       if (meas.lidar->points.back().curvature < 80 || meas.lidar->points.back().curvature > 120) {
-        RCLCPP_WARN(this->get_logger(),
-                    "meas.lidar->points.back().curvature (%.2f) should be close to 100. Please "
-                    "check the `timestamp_unit` "
-                    "or values of `time` (or `t`) field of the point cloud input from your sensor.",
-                    meas.lidar->points.back().curvature);
+        RCLCPP_DEBUG(this->get_logger(),
+                     "meas.lidar->points.back().curvature (%.2f) should be close to 100. Please "
+                     "check the `timestamp_unit` "
+                     "or values of `time` (or `t`) field of the point cloud input from your sensor.",
+                     meas.lidar->points.back().curvature);
       }
 
       double dt       = meas.lidar->points.back().curvature / 1000.0;
@@ -1016,6 +1081,33 @@ bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
   return (acc_ref - acc_curr).norm() <= acc_diff_thr;
 }
 
+void SPARKFastLIO2::pruneMapToLimit() {
+  PointVector all_points;
+  ikd_tree_.flatten(ikd_tree_.Root_Node, all_points, NOT_RECORD);
+
+  const int current_size = static_cast<int>(all_points.size());
+  if (current_size <= max_map_points_) return;
+
+  // Sort by squared distance to current LiDAR position — keep the closest points
+  const V3D lidar_xyz = kf_.get_lidar_position();
+  std::sort(all_points.begin(), all_points.end(),
+    [&lidar_xyz](const PointType &a, const PointType &b) {
+      const float da = (a.x - lidar_xyz(0)) * (a.x - lidar_xyz(0)) +
+                       (a.y - lidar_xyz(1)) * (a.y - lidar_xyz(1)) +
+                       (a.z - lidar_xyz(2)) * (a.z - lidar_xyz(2));
+      const float db = (b.x - lidar_xyz(0)) * (b.x - lidar_xyz(0)) +
+                       (b.y - lidar_xyz(1)) * (b.y - lidar_xyz(1)) +
+                       (b.z - lidar_xyz(2)) * (b.z - lidar_xyz(2));
+      return da < db;
+    });
+
+  all_points.resize(max_map_points_);
+  ikd_tree_.Build(all_points);
+
+  RCLCPP_DEBUG(this->get_logger(),
+               "Map pruned: %d -> %d pts", current_size, max_map_points_);
+}
+
 void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   if (flg_first_scan_) {
     first_lidar_time_                = Measures.lidar_beg_time;
@@ -1041,8 +1133,15 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
 
   latest_state_ = kf_.get_x();
 
+  diag_last_raw_pts_ = static_cast<int>(cloud_undistort_->size());
+
   if (feats_undistort_->empty() || (feats_undistort_ == NULL)) {
-    RCLCPP_WARN_STREAM(this->get_logger(), "No point, skip this scan!\n");
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Skip scan: feats_undistort empty after IMU processing "
+                 "(raw cloud had %d pts, IMU buf size: %zu)",
+                 diag_last_raw_pts_,
+                 imu_buffer_.size());
+    diag_skipped_empty_++;
     return;
   }
 
@@ -1054,7 +1153,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
     } else {
       const auto &mean_acc = Measures.getMeanAcc();
       if (isMotionStopped(mean_acc_stopped_, mean_acc, acc_diff_thr_)) {
-        RCLCPP_WARN_STREAM(
+        RCLCPP_DEBUG_STREAM(
             this->get_logger(),
             "Waiting for motion to perform gravity alignment...now a robot has been stopped");
         num_consecutive_moving_frames = 0;
@@ -1085,9 +1184,18 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   }
   kdtree_size_st_ = ikd_tree_.size();
 
+  diag_last_down_pts_ = feats_down_size_;
+
   /*** ICP and iterated Kalman filter update ***/
   if (feats_down_size_ < 5) {
-    RCLCPP_WARN_STREAM(this->get_logger(), "No point, skip this scan!");
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Skip scan: only %d pts after voxel downsample "
+                 "(raw: %d, filter_num: %d, voxel_size: %.3f)",
+                 feats_down_size_,
+                 diag_last_raw_pts_,
+                 point_filter_num_,
+                 filter_size_map_min_);
+    diag_skipped_sparse_++;
     return;
   }
 
@@ -1115,7 +1223,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
         std::stringstream ss;
         ss << "Waiting for motion: " << global_gravity_directions_.size() << " / "
            << num_gravity_measurements_thr_;
-        RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+        RCLCPP_DEBUG(this->get_logger(), "%s", ss.str().c_str());
       }
 
       global_gravity_directions_.push_back(offset_R_I_B * gravity_direction);
@@ -1131,7 +1239,7 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
       {
         std::stringstream ss;
         ss << "Gravity alignment complete! `R_gravity_aligned`: " << R_gravity_aligned_;
-        RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+        RCLCPP_DEBUG(this->get_logger(), "%s", ss.str().c_str());
       }
 
       is_gravity_aligned_ = true;
@@ -1145,15 +1253,20 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
 
   if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty()) {
-    RCLCPP_WARN(this->get_logger(),
-                "Gravity alignment is enabled but not yet completed. Waiting for alignment...");
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Gravity alignment is enabled but not yet completed. Waiting for alignment...");
     return;
   }
+
+  diag_scans_processed_++;
 
   /******* Publish topics *******/
   const auto stamp = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
   publishOdometry(latest_state_, stamp);
   mapIncremental();
+  if (ikd_tree_.size() > max_map_points_) {
+    pruneMapToLimit();
+  }
 
   if (path_en_) {
     publishPath(latest_state_);
@@ -1193,7 +1306,7 @@ void SPARKFastLIO2::exportKDTreeToPCD(const std::string& filepath) {
   cloud->is_dense = true;
   
   pcl::io::savePCDFileBinaryCompressed(filepath, *cloud);
-  RCLCPP_INFO(this->get_logger(), "Saved %zu points to %s", cloud->points.size(), filepath.c_str());
+  RCLCPP_DEBUG(this->get_logger(), "Saved %zu points to %s", cloud->points.size(), filepath.c_str());
 }
 
 void SPARKFastLIO2::saveMapAsPCD() {
@@ -1230,7 +1343,7 @@ try {
   exportKDTreeToPCD(filepath);
   response->success = true;
   response->message = "Saved KD-tree map to:" + filepath;
-  RCLCPP_INFO(this->get_logger(), "Exported KD-tree to: %s", filepath.c_str());
+  RCLCPP_DEBUG(this->get_logger(), "Exported KD-tree to: %s", filepath.c_str());
 } catch (const std::exception& e) {
   response->success = false;
   response->message = std::string("Failed to save: ") + e.what();

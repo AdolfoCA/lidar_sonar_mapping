@@ -48,6 +48,7 @@ RUN apt update -q \
     ros-humble-foxglove-bridge \
     ros-humble-perception-pcl \
     pybind11-dev \
+    tmux \
     && apt clean \
     apt install ros-humble-foxglove-bridge \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -78,9 +79,19 @@ USER $USERNAME
 # Clean previous build artifacts
 RUN rm -rf /home/$USERNAME/ros2_ws/build /home/$USERNAME/ros2_ws/log /home/$USERNAME/ros2_ws/install
 
-# Source ROS in bashrc
+# tmux config: remap prefix to Ctrl-a, enable mouse, fix colors
+RUN echo 'unbind C-b' >> /home/$USERNAME/.tmux.conf \
+    && echo 'set-option -g prefix C-a' >> /home/$USERNAME/.tmux.conf \
+    && echo 'bind-key C-a send-prefix' >> /home/$USERNAME/.tmux.conf \
+    && echo 'set -g mouse on' >> /home/$USERNAME/.tmux.conf \
+    && echo 'set -g default-terminal "screen-256color"' >> /home/$USERNAME/.tmux.conf \
+    && echo 'set -g history-limit 10000' >> /home/$USERNAME/.tmux.conf
+
+# Source ROS in bashrc and add mission aliases
 RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /home/$USERNAME/.bashrc \
-    && echo 'source /home/'$USERNAME'/ros2_ws/install/setup.bash' >> /home/$USERNAME/.bashrc
+    && echo 'source /home/'$USERNAME'/ros2_ws/install/setup.bash' >> /home/$USERNAME/.bashrc \
+    && echo 'alias start_mission="bash /home/'$USERNAME'/ros2_ws/src/start_mission.sh"' >> /home/$USERNAME/.bashrc \
+    && echo 'alias stop_mission="tmux kill-session -t mission && echo Mission stopped."' >> /home/$USERNAME/.bashrc
 
 # Build the ROS 2 workspace
 WORKDIR /home/$USERNAME/ros2_ws

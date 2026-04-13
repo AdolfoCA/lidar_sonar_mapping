@@ -1,0 +1,37 @@
+from setuptools import find_packages, setup
+import os
+from glob import glob
+
+package_name = 'sonar_map'
+
+setup(
+    name=package_name,
+    version='0.0.1',
+    packages=find_packages(exclude=['test']),
+    data_files=[
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='adolfo',
+    maintainer_email='adaca@dtu.dk',
+    description='Sonar mapping package: transforms sonar scans using odometry and accumulates into a probabilistic 3D voxel map.',
+    license='MIT',
+    tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'sonar_scan_ned = sonar_map.sonar_scan_ned:main',
+            'sonar_map_ned_no_semantic = sonar_map.sonar_map_ned_no_semantic:main',
+            'sonar_map_ned_semantic = sonar_map.sonar_map_ned_semantic:main',
+            'save_map = sonar_map.save_map:main',
+            'object_cluster_node = sonar_map.object_cluster_node:main',
+            'sdf_fitting_node = sonar_map.sdf_fitting_node:main',
+            'norbit_scan_ned = sonar_map.norbit_scan_ned:main',
+            'norbit_map_ned = sonar_map.norbit_map_ned:main',
+            'semantic_map = sonar_map.semantic_map:main',
+        ],
+    },
+)

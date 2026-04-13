@@ -1,19 +1,24 @@
 /**:
   ros__parameters:
+    common:
+      map_frame:            "odom"
+      imu_frame:            "os_imu"    # must match parent frame in tf_static_publisher config
+      lidar_frame:          "os_lidar"
+      visualization_frame:  "imu"       # odometry + TF published in IMU (os_imu) frame
     preprocess:
-      lidar_type: 3
+      lidar_type: 3  # 3 for ouster lidar 
       scan_line: 128
-      scan_rate: 10
       timestamp_unit: 3           # 0=SEC, 1=MS, 2=US, 3=NS; Ouster timestamps are in nanoseconds
-      blind: 1.0
-      blind_for_human_pilot: 1.0
+      blind: 1.0                # min range in meters
+      blind_for_human_pilot: 0.0
+      water_level: 1.0          # reject points with z < -water_level in LiDAR frame [m]; 0 = disabled
       # Ouster PointCloud2 field name mapping
       # Set these to match the actual field names published by your Ouster driver.
       # OS2 with ouster-ros driver uses: reflectivity, ring, near_ir, t
       # Some older drivers or datasets may use: intensity, ring, ambient, t
       field_name_time: "t"
       field_name_ring: "ring"
-      field_name_intensity: "reflectivity"
+      field_name_intensity: "intensity"
       field_name_ambient: "near_ir"
     mapping:
       acc_cov: 0.00041
@@ -28,20 +33,33 @@
       extrinsic_R: [ -1.0,  0.0,  0.0,
                        0.0, -1.0,  0.0,
                        0.0,  0.0,  1.0 ]
-      filter_size_map: 0.5
+
+      filter_size_map: 0.5  # meters, for map-based filtering of points during scan-to-map matching
+
     publish:
       path_en: true
-      scan_publish_en: true
-      dense_publish_en: true
-      scan_lidarframe_pub_en: true
-      scan_bodyframe_pub_en: true
-      scan_baseframe_pub_en: false
+      scan_publish_en: true        # false: close all the point cloud output
+      dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
+      scan_lidarframe_pub_en: false # true: output the point cloud scans in the LiDAR frame
+      scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body frame
+      scan_baseframe_pub_en: false  # true: output the point cloud scans in the base frame
+
     pcd_save:
       pcd_save_en: false
       interval: 10
+    
+    dynamic_filter:
+      enable: true
+      nearby_radius: 1.5  # [m] points closer than this to existing map geometry
+                          # that don't fit the plane are treated as moving objects
+                          # and excluded from the map. Increase if you get false
+                          # positives on slow-moving objects; decrease for tighter
+                          # rejection.
+
     verbose: true
-    runtime_pos_log_enable: false
-    point_filter_num_for_preprocessing: 1
-    point_filter_num: 4
+    runtime_pos_log_enable: true
+    point_filter_num_for_preprocessing: 1 # If it is set to `1`, full point cloud gonna be publlished
+    point_filter_num: 4                   # For pose estimation.
     max_iteration: 4
     cube_side_length: 1000.0
+    max_map_points: 50000   # cap on ikd-tree size; oldest/farthest points pruned when exceeded

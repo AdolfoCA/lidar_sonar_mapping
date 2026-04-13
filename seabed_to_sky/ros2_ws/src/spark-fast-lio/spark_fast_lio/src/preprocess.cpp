@@ -11,6 +11,7 @@ Preprocess::Preprocess()
       point_filter_num(1),
       blind(0.01),
       blind_for_human_pilots(1.5),
+      water_level(0.0),
       feature_enabled(0) {
   inf_bound         = 10;
   N_SCANS           = 6;
@@ -115,7 +116,7 @@ void Preprocess::parseOusterCloud(const sensor_msgs::msg::PointCloud2 &msg,
   static bool logged_fields = false;
   if (!logged_fields) {
     auto logger = rclcpp::get_logger("Preprocess");
-    RCLCPP_INFO(logger, "Ouster field mapping: time='%s'%s, ring='%s'%s, intensity='%s'%s",
+    RCLCPP_DEBUG(logger, "Ouster field mapping: time='%s'%s, ring='%s'%s, intensity='%s'%s",
                 ouster_fields.time_field.c_str(),   f_time      ? " [OK]" : " [NOT FOUND]",
                 ouster_fields.ring_field.c_str(),    f_ring      ? " [OK]" : " [NOT FOUND]",
                 ouster_fields.intensity_field.c_str(), f_intensity ? " [OK]" : " [NOT FOUND]");
@@ -329,6 +330,7 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg) {
                      pl_orig[i].y * pl_orig[i].y +
                      pl_orig[i].z * pl_orig[i].z;
       if (range < (blind * blind)) continue;
+      if (water_level > 0.0 && pl_orig[i].z < -water_level) continue;
 
       PointType added_pt;
       added_pt.x         = pl_orig[i].x;
@@ -372,6 +374,7 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2 &msg) {
                      pl_orig[i].z * pl_orig[i].z;
 
       if (range < (blind * blind)) continue;
+      if (water_level > 0.0 && pl_orig[i].z < -water_level) continue;
 
       PointType added_pt;
       added_pt.x         = pl_orig[i].x;
@@ -425,6 +428,7 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg) {
       if (range < (blind * blind) ||
           is_from_pilot_zone(pl_orig[i].x, pl_orig[i].y, pl_orig[i].z, "ouster"))
         continue;
+      if (water_level > 0.0 && pl_orig[i].z < -water_level) continue;
 
       PointType added_pt;
       added_pt.x         = pl_orig[i].x;
@@ -468,6 +472,7 @@ void Preprocess::kmoust64_handler(const sensor_msgs::msg::PointCloud2 &msg) {
                      pl_orig[i].z * pl_orig[i].z;
 
       if (range < (blind * blind)) continue;
+      if (water_level > 0.0 && pl_orig[i].z < -water_level) continue;
 
       PointType added_pt;
       added_pt.x         = pl_orig[i].x;
@@ -613,6 +618,7 @@ void Preprocess::velodyne_handler(const sensor_msgs::msg::PointCloud2 &msg) {
       if (i % point_filter_num == 0) {
         if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z >
             (blind * blind)) {
+          if (water_level > 0.0 && added_pt.z < -water_level) continue;
           if (is_from_pilot_zone(added_pt.x, added_pt.y, added_pt.z)) {
             pl_from_pilots.push_back(added_pt);
             continue;

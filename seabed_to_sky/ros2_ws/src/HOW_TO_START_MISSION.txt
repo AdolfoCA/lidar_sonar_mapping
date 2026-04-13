@@ -1,0 +1,38 @@
+HOW TO START THE MISSION
+========================
+
+1. Start the container (from the host machine)
+-----------------------------------------------
+cd seabed_to_sky/
+docker compose up -d
+
+2. Enter the container
+-----------------------
+docker exec -it seabed_to_sky bash
+
+3. Launch everything
+---------------------
+start_mission
+
+4. Navigate between nodes (tmux)
+----------------------------------
+Click on window tabs at the bottom with the mouse.
+
+Or use keyboard:
+  Ctrl-a  then  0  →  tf_static
+  Ctrl-a  then  1  →  LiDAR odometry (spark_fast_lio)
+  Ctrl-a  then  2  →  Sonar 3D reconstruction
+  Ctrl-a  then  3  →  Sonar map
+  Ctrl-a  then  4  →  Spare shell
+
+  Ctrl-a  then  n  →  next window
+  Ctrl-a  then  p  →  previous window
+
+  Mouse wheel       →  scroll logs
+
+  Ctrl-a  then  d  →  detach (nodes keep running)
+  tmux attach -t mission  →  reattach
+
+5. Stop everything
+-------------------
+stop_mission

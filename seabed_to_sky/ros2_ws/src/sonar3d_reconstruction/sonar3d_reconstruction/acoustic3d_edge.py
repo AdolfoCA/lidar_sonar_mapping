@@ -43,6 +43,7 @@ class Acoustic3dEdge(Node):
                 ("sonar.topic", Parameter.Type.STRING),
                 ("sonar.threshold", Parameter.Type.DOUBLE),
                 ("sonar.min_range", Parameter.Type.DOUBLE),
+                ("sonar.max_range", Parameter.Type.DOUBLE),
                 ("sonar.sound_speed", Parameter.Type.DOUBLE),
                 ("sonar.sound_speed_actual", Parameter.Type.DOUBLE),
                 ("sonar.pitch", Parameter.Type.DOUBLE),
@@ -119,14 +120,8 @@ class Acoustic3dEdge(Node):
 
         # Denoise the image
         if self.get_parameter("denoise.standard").value:
-            if self.get_parameter("output.frame_id").value == "oculus":
-                image = filter_horizontal_image(image)
-            elif self.get_parameter("output.frame_id").value == "blueview":
-                image = filter_vertical_image(image)
-            else:
-                self.get_logger().error("Invalid sonar type.")
-                return
-
+            image = filter_horizontal_image(image)
+            
         if self.get_parameter("denoise.open").value:
             kernel = np.ones((3, 1), np.uint8)
             image = cv2.morphologyEx(
@@ -141,8 +136,9 @@ class Acoustic3dEdge(Node):
 
         # Cut the image range
         start_range_idx = np.where(self.ranges >= self.get_parameter("sonar.min_range").value)[0][0]
-        self.ranges = self.ranges[start_range_idx:]
-        self.image = image[start_range_idx:, :]
+        end_range_idx = np.where(self.ranges <= self.get_parameter("sonar.max_range").value)[0][-1] + 1
+        self.ranges = self.ranges[start_range_idx:end_range_idx]
+        self.image = image[start_range_idx:end_range_idx, :]
         self.image_timestamp = msg.header.stamp
 
         # Get the profile
