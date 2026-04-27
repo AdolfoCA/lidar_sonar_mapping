@@ -3,8 +3,8 @@ acoustic3d_edge_horizontal:
     use_sim_time: false # Change this back to false when running on real USV
     sonar:
       topic: "/blueview_message_polar"
-      threshold: 60.
-      min_range: 1.0
+      threshold: 100.
+      min_range: 1.5
       max_range: 20.0
       sound_speed: 1500.
       sound_speed_actual: 1482.42
