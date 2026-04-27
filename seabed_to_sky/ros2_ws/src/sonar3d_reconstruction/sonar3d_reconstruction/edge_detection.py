@@ -68,11 +68,11 @@ def image2Profile(
     r = ranges[edges]
     if pitch != 0.0:
         x = r * np.cos(beams) * np.cos(pitch)
-        y = r * np.sin(beams) * np.cos(pitch)
-        z = r * np.sin(pitch)
+        y = -r * np.sin(beams)
+        z = r * np.cos(beams) * np.sin(pitch)
     else:
         x = r * np.cos(beams)
-        y = r * np.sin(beams)
+        y = -r * np.sin(beams)
         z = np.zeros_like(x)
     delay = np.zeros_like(x)  # Assume no delay for now
     intensity = image[edges, np.arange(len(edges))]

@@ -3,12 +3,11 @@ acoustic3d_edge_horizontal:
     use_sim_time: false
     sonar:
       topic: "/blueview_message_polar"
-      threshold: 70.
+      threshold: 60.
       min_range: 0.7
-      max_range: 7.0
+      max_range: 7.
       sound_speed: 1500.
       sound_speed_actual: 1482.42
-      pitch: 30.0 # degrees
     method:
       leading_edge: True
       falling_edge: False
@@ -20,5 +19,3 @@ acoustic3d_edge_horizontal:
     output:
       topic: "/blueview/point2/leading"
       frame_id: "blueview"
-      visualize: False
-      folder: "/home/rosdev/ros2_ws/src/images/blueview"

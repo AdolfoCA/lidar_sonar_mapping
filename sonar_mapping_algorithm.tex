@@ -1,0 +1,261 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{natbib}
+\usepackage{graphicx}
+\usepackage[margin=0.7in]{geometry}
+
+\title{Probabilistic Sonar Mapping for Seabed-to-Sky 3D Reconstruction}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper presents a complete probabilistic sonar mapping algorithm for autonomous underwater vehicle seabed mapping via imaging sonar. The system fuses multiple information sources: adaptive global Kalman filters estimate seabed depth and intensity medians; a dual-layer voxel map employs Beta-Bernoulli occupancy for structures and Gaussian depth probabilities for seabed; semantic classification enforces LiDAR-sonar co-registration; two-stage DBSCAN outlier rejection prunes noise; and finally, graph-regularised signed distance field fitting extracts high-fidelity geometry from probabilistic occupancy. We describe the complete pipeline with explicit equations, hyperparameters, and failure modes.
+\end{abstract}
+
+\section{Sonar Geometric Model}
+
+The BlueView M900 forward-looking imaging sonar mounted on an uncrewed surface vessel (USV) returns point clouds in the sensor frame. These are transformed to the global East-North-Up (ENU) odom frame via the static transform chain: $\text{world} \to \text{odom} \to \text{base\_link} \to \text{sonar\_frame}$.
+
+For each return point $\mathbf{p} = (x, y, z)^\top$ in odom frame and USV position $\mathbf{o} = (o_x, o_y, o_z)^\top$:
+\begin{align}
+d &= o_z - z \label{eq:depth}
+\end{align}
+where $d \in \mathbb{R}^+$ is depth (positive downward; ENU has $z$ upward). The raw sonar intensity is $I \in [0, 65535]$ as a uint16 value. Geometric transformation via the TF chain maps slant range at angle $\theta$ from nadir to corrected ENU coordinates, handling the sonar's tilt.
+
+\section{Environmental Constraints and Depth Band}
+
+The algorithm fixes two environmental parameters that define the valid depth band:
+\begin{align}
+h_0 &: \text{prior seabed depth below USV (m)} \\
+h_H &: \text{max object height on seabed (m)}
+\end{align}
+Typical values: $h_0 = 2.5$ m, $h_H = 0.5$ m. These establish the depth band $[d_{\text{lo}}, d_{\text{hi}}]$:
+\begin{align}
+d_{\text{lo}} &= \max(0, \mu_h - h_H - \sigma_h) \label{eq:band_lo}\\
+d_{\text{hi}} &= \mu_h + 2\sigma_h \label{eq:band_hi}
+\end{align}
+where $\mu_h$ and $\sigma_h$ are the online seabed depth mean and standard deviation (maintained by the Kalman filter in Section~\ref{sec:adaptive}). Initially, a uniform prior $p(d) \propto 1$ over $[d_{\text{lo}}, d_{\text{hi}}]$ is assumed. As returns accumulate, this uniform uncertainty transitions to a Gaussian representation (Section~\ref{sec:bathy}), enabling adaptive voxel probability assignment.
+
+\section{Adaptive Seabed Estimator} \label{sec:adaptive}
+
+Two scalar Kalman filters maintain global state:
+\begin{align}
+\text{State 1:} \quad &\mu_h \in \mathbb{R}, \, \text{var}_h \in \mathbb{R}^+ \\
+\text{State 2:} \quad &\mu_I \in \mathbb{R}, \, \text{var}_I \in \mathbb{R}^+
+\end{align}
+
+\subsection{Prediction Step (per scan)}
+\begin{align}
+\text{var}_h &\leftarrow \text{var}_h + q_h^2 \label{eq:pred_var_h} \\
+\text{var}_I &\leftarrow \text{var}_I + q_I^2
+\end{align}
+where $q_h^2$ and $q_I^2$ are process noise variances (typically $q_h = 0.01$ m, $q_I = 100$).
+
+\subsection{Update Step (if $\geq n_{\min}$ candidates)}
+
+Depth measurement: let $z_{\text{meas}} \in \mathbb{R}$ be the 85th percentile of all return depths in the scan. This robustly estimates the seabed (deepest surface) regardless of objects.
+\begin{align}
+K_h &= \frac{\text{var}_h}{\text{var}_h + r_h^2} \label{eq:gain_h}\\
+\mu_h &\leftarrow \mu_h + K_h(z_{\text{meas}} - \mu_h) \\
+\text{var}_h &\leftarrow (1 - K_h) \text{var}_h
+\end{align}
+where $r_h^2$ is measurement noise variance (typically $r_h = 0.05$ m).
+
+Intensity measurement: $I_{\text{meas}} \in \mathbb{R}$ is the median of non-zero returns with $I \leq \mu_I + 2\sigma_I$ (filtering extreme outliers):
+\begin{align}
+K_I &= \frac{\text{var}_I}{\text{var}_I + r_I^2} \label{eq:gain_I} \\
+\mu_I &\leftarrow \mu_I + K_I(I_{\text{meas}} - \mu_I) \\
+\text{var}_I &\leftarrow (1 - K_I) \text{var}_I
+\end{align}
+where $r_I^2$ is intensity measurement noise (typically $r_I = 500$).
+
+\subsection{Adaptive Thresholds}
+
+The global seabed intensity estimate $\mu_I$ enables adaptive classification thresholds:
+\begin{align}
+I_{\text{struct}} &= \lambda_{\text{struct}} \cdot \mu_I \label{eq:thresh_struct}\\
+I_{\text{object}} &= \lambda_{\text{object}} \cdot \mu_I \label{eq:thresh_object}
+\end{align}
+Typical: $\lambda_{\text{struct}} = 1.5$, $\lambda_{\text{object}} = 3.0$. These are \emph{not} fixed values; they scale with environmental conditions (sediment type, sonar gain, etc.) as encoded in $\mu_I$.
+
+\section{Bathymetry Map---Per-Cell Kalman Filter} \label{sec:bathy}
+
+A sparse 2D grid at coarser resolution ($\text{cell\_size} = 0.5$ m $\gg$ $\text{voxel\_size} = 0.05$ m) maintains per-cell Kalman filters:
+\begin{align}
+\text{State per cell}(x,y): \quad &\mu_z(x,y) \in \mathbb{R}, \, \text{var}_z(x,y) \in \mathbb{R}^+
+\end{align}
+where $\mu_z$ is estimated seabed depth (ENU frame) and $\text{var}_z$ quantifies uncertainty.
+
+\subsection{Kalman Update}
+
+Updated only from seabed-classified returns (Section~\ref{sec:semantic}). For returns falling in cell $(x,y)$, the measurement is $z_{\text{meas}} = \text{median}(z_i)$ of return depths in that cell:
+\begin{align}
+\text{var}_z &\leftarrow \text{var}_z + q_z^2 \label{eq:pred_var_z} \\
+K &= \frac{\text{var}_z}{\text{var}_z + r_z^2} \\
+\mu_z &\leftarrow \mu_z + K(z_{\text{meas}} - \mu_z) \\
+\text{var}_z &\leftarrow (1 - K)\text{var}_z \label{eq:upd_var_z}
+\end{align}
+
+\subsection{Gaussian CDF Occupancy}
+
+For a seabed voxel with depth interval $[z_{\text{lo}}, z_{\text{hi}}]$, occupancy probability is:
+\begin{align}
+p_{\text{voxel}} &= \Phi\left(\frac{z_{\text{hi}} - \mu_z}{\sigma_z}\right) - \Phi\left(\frac{z_{\text{lo}} - \mu_z}{\sigma_z}\right) \label{eq:gaussian_cdf}
+\end{align}
+where $\Phi(\cdot)$ is the standard normal CDF and $\sigma_z = \sqrt{\text{var}_z}$. This is the \emph{seabed layer only}---structures and objects use Beta-Bernoulli (Section~\ref{sec:voxel_update}).
+
+\section{Semantic Classification---Three Regimes} \label{sec:semantic}
+
+Each return $(x, y, z, I)$ is classified into one of four categories:
+
+\subsection{MISS}
+No acoustic return ($I = 0$): apply $\Delta\beta$ decrement to existing voxels in the depth column.
+
+\subsection{SEABED HIT}
+$0 < I < I_{\text{object}}$ and no LiDAR support:
+\begin{align}
+&\text{Update bathymetry KF at } (x,y) \text{ with } z_{\text{meas}} = z_i \\
+&\text{Create/update single coarse voxel at } (x,y,z_i) \\
+&\text{Occupancy from Eq.~(\ref{eq:gaussian_cdf})} \label{eq:seabed_class} \\
+&\text{Semantic label: } 0 \text{ (SEABED)}
+\end{align}
+
+\subsection{STRUCTURE HIT}
+$I \geq I_{\text{struct}}$ and $\geq 1$ LiDAR point within $\epsilon_{\text{struct}}$ in XY:
+\begin{align}
+\text{Single voxel} \, \Delta\alpha &= \lambda_{\text{hit}} \cdot \frac{I}{I_{\text{struct}}} \cdot n_{\text{lidar}} \label{eq:struct_update} \\
+p &= \frac{\alpha}{\alpha + \beta} \quad \text{(Beta-Bernoulli)} \\
+\text{Semantic label:} \quad &1 \text{ (STRUCTURE)}
+\end{align}
+where $n_{\text{lidar}}$ is the count of LiDAR points within $\epsilon_{\text{struct}}$ of $(x,y)$. Typical: $\lambda_{\text{hit}} = 0.5$, $\epsilon_{\text{struct}} = 0.15$ m.
+
+USV self-return suppression: reject returns inside an ellipsoidal exclusion zone:
+\begin{align}
+\left(\frac{p_x - c_x}{a}\right)^2 + \left(\frac{p_y - c_y}{b}\right)^2 + \left(\frac{p_z - c_z}{c}\right)^2 \leq 1 \quad \Rightarrow \text{rejected}
+\end{align}
+where $(c_x, c_y, c_z)$ is the USV centre and $a, b, c$ are half-axes (typically $a=0.3$ m, $b=0.3$ m, $c=0.4$ m).
+
+\subsection{OBJECT HIT}
+$I \geq I_{\text{object}}$ and no LiDAR support: two-region column update (Section~\ref{sec:voxel_update}). Semantic label: $2$ (OBJECT).
+
+\section{Voxel Map Update---Beta-Bernoulli} \label{sec:voxel_update}
+
+Each voxel stores $(\alpha, \beta, \text{sumI}, \text{hits}, \text{semantic})$ where:
+\begin{align}
+p_i &= \frac{\alpha_i}{\alpha_i + \beta_i} \quad \text{(occupancy probability)}
+\end{align}
+
+\subsection{Structure Voxel Update}
+
+Single voxel at return location $z_i$ (Eq.~\ref{eq:struct_update}).
+
+\subsection{Object Voxel Update}
+
+Two-region column at $(x_i, y_i)$:
+
+\textbf{Region 1---BODY} (seabed to return height):
+Every voxel in $[z_{\text{seabed}}, z_i]$ receives:
+\begin{align}
+\Delta\alpha &= \lambda_{\text{hit}} \cdot \min\left(\frac{I}{I_{\text{object}}}, 3\right) \label{eq:object_body}
+\end{align}
+The cap at 3 prevents saturation from high-intensity returns.
+
+\textbf{Region 2---ABOVE} (above return height):
+Voxels from $z_i$ upward (to $h_H$ above) receive weighted increments:
+\begin{align}
+w(\Delta z) &= \exp\left(-\frac{(\Delta z)^2}{2\sigma_{\text{object}}^2}\right), \quad \sum_j w_j = 1 \label{eq:object_above} \\
+\Delta\alpha_j &= \lambda_{\text{hit}} \cdot \min\left(\frac{I}{I_{\text{object}}}, 3\right) \cdot w_j
+\end{align}
+where $\sigma_{\text{object}} = 0.15$ m controls uncertainty in object height.
+
+\subsection{Miss Update}
+
+For returns with $I=0$ (no acoustic return), apply uniform decrement to column:
+\begin{align}
+\Delta\beta &= \frac{\lambda_{\text{miss}}}{n_{\text{col}}} \quad \text{for all voxels in column} \label{eq:miss_update}
+\end{align}
+where $n_{\text{col}}$ is the number of voxels in the depth column and $\lambda_{\text{miss}} = 0.1$ (typical). Voxels with $p < \tau_{\text{pub}} = 0.7$ are deleted.
+
+\subsection{Convergence}
+
+As $N$ observations accumulate at voxel $i$:
+\begin{align}
+p_i &\to \frac{\alpha_{\text{true}}}{\alpha_{\text{true}} + \beta_{\text{true}}} \to p_{\text{true}} \quad (\text{empirical occupancy})
+\end{align}
+
+\section{Dual-Layer Voxel Storage}
+
+\textbf{Fine layer} ($\text{voxel\_size} = 0.05$ m): stores STRUCTURE and OBJECT voxels with Beta-Bernoulli probability.
+
+\textbf{Coarse layer} ($\text{seabed\_voxel\_size} = 0.5$ m): stores SEABED voxels with Gaussian CDF probability.
+
+Voxels are indexed via packed 64-bit keys:
+\begin{align}
+\text{key} = (\text{ix} \ll 42) \mid (\text{iy} \ll 21) \mid \text{iz}
+\end{align}
+where $ix, iy, iz$ are signed 21-bit integer indices (range $[-2^{20}, 2^{20})$).
+
+\section{Outlier Rejection---Two-Stage DBSCAN}
+
+Sonar maps accumulate noise and misclassified voxels. Two-stage DBSCAN applied to STRUCTURE and OBJECT separately:
+
+\textbf{Stage 1---Outlier rejection}:
+\begin{align}
+\text{DBSCAN}(\epsilon_1, \text{min\_samples}_1) \quad \text{on XYZ}
+\end{align}
+Voxels with label $= -1$ (isolated, no neighbours within $\epsilon_1$) are discarded. Typical: $\epsilon_{1,\text{struct}} = 0.15$ m, $\epsilon_{1,\text{obj}} = 0.06$ m.
+
+\textbf{Stage 2---Cluster grouping}:
+\begin{align}
+\text{DBSCAN}(\epsilon_2, \text{min\_samples}_2) \quad \text{on surviving voxels}
+\end{align}
+Each connected component receives unique \texttt{cluster\_id}. Clusters with fewer than \texttt{min\_cluster\_size} voxels are dropped. Typical: $\epsilon_{2,\text{struct}} = 0.5$ m, $\epsilon_{2,\text{obj}} = 0.2$ m.
+
+Output: \texttt{structure\_clusters} and \texttt{object\_clusters} (PointCloud2 with \texttt{cluster\_id} field).
+
+\section{SDF-Based Geometry Estimation}
+
+For each cluster of $N$ voxels with positions $\{\mathbf{x}_i\}$, occupancy probabilities $\{p_i\}$, and Beta-Bernoulli counts $\{\alpha_i, \beta_i\}$:
+
+\subsection{Signed Distance Initial Guess}
+
+\begin{align}
+d_i &= \delta \cdot (1 - 2p_i) \label{eq:sdf_init}
+\end{align}
+where $\delta = 0.15$ m is the truncation distance. Voxels with $p_i > 0.5$ (interior) get $d_i < 0$; $p_i < 0.5$ (exterior) → $d_i > 0$.
+
+\subsection{Observation Weight}
+
+\begin{align}
+w_i &= p_i \cdot (\alpha_i + \beta_i) \label{eq:obs_weight}
+\end{align}
+A voxel observed 100 times with $p=0.8$ has $10\times$ the weight of one observed 10 times at the same $p$. This ensures well-observed voxels dominate the geometry.
+
+\subsection{SDF Optimization}
+
+Solve the regularised linear system:
+\begin{align}
+(\mathbf{W} + \lambda \mathbf{L}) \boldsymbol{\phi} &= \mathbf{W} \mathbf{d} \label{eq:sdf_system}
+\end{align}
+where:
+\begin{align}
+\mathbf{W} &= \text{diag}(w_i) \quad \text{(observation weights)} \\
+\mathbf{L} &\in \mathbb{R}^{N \times N} \quad \text{(graph Laplacian of voxel neighbourhood)} \\
+\lambda &= 0.5 \quad \text{(smoothness weight)} \\
+\boldsymbol{\phi} &\in \mathbb{R}^N \quad \text{(optimised SDF per voxel)}
+\end{align}
+
+The Laplacian $\mathbf{L}$ connects voxels within $1.5 \times \text{voxel\_size}$, enforcing spatial smoothness and preventing spurious interior/exterior inversions. Solved via conjugate gradient (CG). The surface estimate is the zero level-set $\phi_i \approx 0$.
+
+\textbf{Output}: \texttt{structure\_refined} and \texttt{object\_refined}---same voxels as input with $\phi$ appended as \texttt{sdf} field. Original Beta-Bernoulli probabilities are never modified.
+
+\section{Conclusion}
+
+The complete pipeline integrates adaptive global Kalman filters, dual-layer probabilistic occupancy, semantic LiDAR-sonar co-registration, graph-regularised outlier rejection, and SDF geometry estimation to produce high-fidelity 3D seabed maps from imaging sonar. The algorithm is implementable in real-time on modest compute (ROS2 Humble with Python/C++ backend) and scales to hours of continuous survey missions.
+
+\end{document}

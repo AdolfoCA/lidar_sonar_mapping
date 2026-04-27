@@ -44,14 +44,16 @@ def ProjectedSonarImage2Image(msg: ProjectedSonarImage, normalize=False) -> np.n
 
     image = image.astype(dtype=dtype)
 
-    # normalize the image to the range [0, 255]
+    # Normalise to [0, 255] using the dtype's fixed maximum so the scale is
+    # consistent across frames (a pixel value of 130/255 always means the same
+    # fraction of the sensor's full range, regardless of what this ping looks like).
     if normalize or dtype == np.uint16:
-        image = cv2.convertScaleAbs(image, alpha=(255.0 / image.max()))
+        image = cv2.convertScaleAbs(image, alpha=255.0 / np.iinfo(dtype).max)
 
     return image, ranges, beams
 
 
-def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_size=(3, 1)):
+def filter_horizontal_image(imageHorizontal, method: list = [], kernel_size=(3, 1)):
     """Filter the horizontal sonar image by removing the mean of the image over each beam and normalizing the image to the range [0, 255].
     
     Parameters:
@@ -67,8 +69,6 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
     )  # Remove the mean of the image over each beam.
     imageHorizontal = np.maximum(0, imageHorizontal - np.quantile(imageHorizontal, 0.1))
     imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
-    if "otsu" in method:
-        imageHorizontal *= cv2.threshold(imageHorizontal, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     if "open" in method:
         if kernel_size != 0:
             kernel = np.ones(kernel_size, np.uint8)

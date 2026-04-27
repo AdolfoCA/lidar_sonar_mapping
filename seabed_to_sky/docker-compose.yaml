@@ -12,7 +12,6 @@ services:
       - USERNAME=rosdev
       - GID=1000
       - UID=1000
-      - "FASTRTPS_DEFAULT_PROFILES_FILE=/usr/local/share/middleware_profiles/rtps_udp_profile.xml"
       - DISPLAY=:0
       - XDG_RUNTIME_DIR=/tmp/runtime-rosdev
       - QT_X11_NO_MITSHM=1

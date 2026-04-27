@@ -1,5 +1,6 @@
 /**:
   ros__parameters:
+    use_sim_time: false
     common:
       map_frame:            "odom"
       imu_frame:            "os_imu"    # must match parent frame in tf_static_publisher config
@@ -59,7 +60,7 @@
     verbose: true
     runtime_pos_log_enable: true
     point_filter_num_for_preprocessing: 1 # If it is set to `1`, full point cloud gonna be publlished
-    point_filter_num: 4                   # For pose estimation.
+    point_filter_num: 8                   # For pose estimation. (increased from 4 for Jetson performance)
     max_iteration: 4
     cube_side_length: 1000.0
     max_map_points: 50000   # cap on ikd-tree size; oldest/farthest points pruned when exceeded

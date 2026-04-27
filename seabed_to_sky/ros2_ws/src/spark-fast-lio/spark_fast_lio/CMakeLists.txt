@@ -3,7 +3,12 @@ project(spark_fast_lio)
 
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g -pthread")
-set(CMAKE_CXX_FLAGS "-O3")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+  # Jetson / ARM64: enable NEON vectorisation and tune for the Cortex-A78AE (Orin)
+  set(CMAKE_CXX_FLAGS "-O3 -march=armv8.2-a+crypto+fp16+rcpc+dotprod -mcpu=cortex-a78ae")
+else()
+  set(CMAKE_CXX_FLAGS "-O3")
+endif()
 
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
