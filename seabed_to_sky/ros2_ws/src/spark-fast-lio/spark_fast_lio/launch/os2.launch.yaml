@@ -1,13 +1,13 @@
 ---
 launch:
-  - arg: {name: start_rviz, default: 'true', description: automatically start rviz}
+  - arg: {name: start_rviz, default: 'false', description: automatically start rviz}
 
   - arg: {name: rviz_path,   default: $(find-pkg-share spark_fast_lio)/rviz/ouster_vbr.rviz, description: rviz file to load}
   - arg: {name: config_path, default: $(find-pkg-share spark_fast_lio)/config/ouster_os2.yaml, description: Model-specific configuration}
 
   - node:
       pkg: spark_fast_lio
-      exec: spark_lio_mapping
+      exec: spark_lio_mapping_mt
       name: lio_mapping
       output: screen
       on_exit: shutdown

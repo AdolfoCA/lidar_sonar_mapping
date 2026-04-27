@@ -7,6 +7,8 @@
 #include <omp.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <filesystem>
 #include <chrono>
@@ -26,9 +28,10 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
   xaxis_point_body_ << LIDAR_SP_LEN, 0.0, 0.0;
   xaxis_point_world_ << LIDAR_SP_LEN, 0.0, 0.0;
-  g_base_            = Zero3d;
-  mean_acc_stopped_  = Zero3d;
-  position_last_     = Zero3d;
+  g_base_               = Zero3d;
+  mean_acc_stopped_     = Zero3d;
+  position_last_        = Zero3d;
+  diag_pos_prev_second_ = Zero3d;
   lidar_T_wrt_imu_   = Zero3d;
   lidar_R_wrt_imu_   = Eye3d;
   R_gravity_aligned_ = Eye3d;
@@ -67,8 +70,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   time_sync_en_  = declare_parameter<bool>("common.time_sync_en", false);
 
   filter_size_map_min_ = declare_parameter<double>("filter_size_map", 0.5);
+  max_range_           = static_cast<float>(declare_parameter<double>("max_range", 50.0));
   cube_len_            = declare_parameter<double>("cube_side_length", 200.0);
-  max_map_points_      = declare_parameter<int>("max_map_points", 50000);
   det_range_           = declare_parameter<double>("mapping.det_range", 300.0);
   fov_deg_             = declare_parameter<double>("mapping.fov_degree", 360.0);
   gyr_cov_             = declare_parameter<double>("mapping.gyr_cov", 0.1);
@@ -104,25 +107,35 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   auto g_vec = declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});
   g_base_ << g_vec[0], g_vec[1], g_vec[2];
 
+  // Sensor callbacks get their own callback group so that the expensive
+  // processLidarAndImu() call on the main timer never starves IMU delivery.
+  // This requires a MultiThreadedExecutor (see main.cpp).
+  sensor_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions sensor_opts;
+  sensor_opts.callback_group = sensor_cb_group_;
+
   // LiDAR: depth=1 — only the latest scan matters; stale scans waste memory and CPU.
   auto lidar_qos = rclcpp::SensorDataQoS().keep_last(1);
   sub_lidar_     = create_subscription<sensor_msgs::msg::PointCloud2>(
       "lidar",
       lidar_qos,
-      std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1));
+      std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1),
+      sensor_opts);
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
   sub_lidar_livox_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
       "lidar",
       lidar_qos,
-      std::bind(&SPARKFastLIO2::livoxLidarCallback, this, std::placeholders::_1));
+      std::bind(&SPARKFastLIO2::livoxLidarCallback, this, std::placeholders::_1),
+      sensor_opts);
 #endif
 
-  // IMU: keep depth=10 — ALL IMU messages between LiDAR scans must be retained for
+  // IMU: keep depth=50 — ALL IMU messages between LiDAR scans must be retained for
   // correct motion compensation. Dropping IMU data here corrupts the IKF integration.
-  auto imu_qos = rclcpp::SensorDataQoS().keep_last(10);
+  auto imu_qos = rclcpp::SensorDataQoS().keep_last(50);
   sub_imu_     = create_subscription<sensor_msgs::msg::Imu>(
-      "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
+      "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1),
+      sensor_opts);
 
   rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
   pub_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
@@ -138,6 +151,13 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
     path_msg_.header.frame_id = map_frame_;
   }
+
+  pub_map_viz_    = create_publisher<sensor_msgs::msg::PointCloud2>("map_visualization", qos);
+  pub_usv_marker_ = create_publisher<visualization_msgs::msg::MarkerArray>("usv_marker", qos);
+
+  pub_debug_raw_        = create_publisher<sensor_msgs::msg::PointCloud2>("debug/cloud_raw", qos);
+  pub_debug_subsampled_ = create_publisher<sensor_msgs::msg::PointCloud2>("debug/cloud_subsampled", qos);
+  pub_debug_voxel_      = create_publisher<sensor_msgs::msg::PointCloud2>("debug/cloud_voxel", qos);
 
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   tf_buffer_      = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -208,6 +228,12 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   diag_timer_ =
       create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::diagnosticCallback, this));
 
+  map_viz_timer_ =
+      create_wall_timer(std::chrono::seconds(5), std::bind(&SPARKFastLIO2::mapVizCallback, this));
+
+  usv_marker_timer_ =
+      create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::usvMarkerCallback, this));
+
   if ((preprocessor_->point_filter_num != 1 && point_filter_num_ > 1)) {
     RCLCPP_DEBUG(this->get_logger(),
                  "Points may be too sparse. Set 'preprocessor_->point_filter_num = 1' and tune "
@@ -224,7 +250,11 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   preprocessor_->ouster_fields.ambient_field =
   declare_parameter<std::string>("preprocess.field_name_ambient", "ambient");
 
-  RCLCPP_DEBUG(this->get_logger(), "SPARKFastLIO2 constructed");
+  ekf_start_delay_s_ = declare_parameter<double>("ekf_start_delay_s", 3.0);
+
+  RCLCPP_INFO(this->get_logger(),
+              "SPARKFastLIO2 constructed — EKF will start %.1f s after first LiDAR scan",
+              ekf_start_delay_s_);
 }
 
 // Outputs rotation matrix that aligns a to b, i.e., R such that R * g_a = g_b
@@ -537,16 +567,24 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
   corr_normvec_->clear();
   total_residual_ = 0.0;
 
-  /** closest surface search and residual computation **/
+  ekf_iter_count_++;  // track how many EKF iterations this scan takes
+
+  int   n_nn_found  = 0;
+  int   n_plane_fit = 0;
+  float sum_nn_dist = 0.0f;
+
+  // LOOP 1 — SEQUENTIAL (no OpenMP).
+  // ikd_tree_.Nearest_Search() accesses shared mutable tree state (lazy deletion
+  // flags, balance counters). Concurrent calls from multiple threads produce data
+  // races on ARM64's weak memory model, returning wrong neighbours and corrupting
+  // the map.  World-frame transform + NN search + plane fitting all run here.
 #ifdef MP_EN
   omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for
 #endif
   for (int i = 0; i < feats_down_size_; i++) {
     PointType &point_body  = feats_down_body_->points[i];
     PointType &point_world = feats_down_world_->points[i];
 
-    /* transform to world frame */
     V3D p_body(point_body.x, point_body.y, point_body.z);
     V3D p_global(s.rot * (s.offset_R_L_I * p_body + s.offset_T_L_I) + s.pos);
     point_world.x         = p_global(0);
@@ -555,15 +593,17 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     point_world.intensity = point_body.intensity;
 
     vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
-
     auto &points_near = nearest_points_[i];
 
     if (ekfom_data.converge) {
-      /** Find the closest surfaces in the map **/
       ikd_tree_.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
-      point_selected_surf_[i] = points_near.size() < NUM_MATCH_POINTS        ? false
-                                : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false
-                                                                             : true;
+      bool nn_ok = (points_near.size() >= (size_t)NUM_MATCH_POINTS) &&
+                   (pointSearchSqDis[NUM_MATCH_POINTS - 1] <= 5.0f);
+      point_selected_surf_[i] = nn_ok;
+      if (nn_ok) {
+        n_nn_found++;
+        sum_nn_dist += std::sqrt(pointSearchSqDis[NUM_MATCH_POINTS - 1]);
+      }
     }
 
     if (!point_selected_surf_[i]) continue;
@@ -571,6 +611,7 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     VF(4) pabcd;
     point_selected_surf_[i] = false;
     if (esti_plane(pabcd, points_near, 0.1f)) {
+      n_plane_fit++;
       float pd2 =
           pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
       float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -586,8 +627,15 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     }
   }
 
-  effect_feat_num_ = 0;
+  if (ekfom_data.converge) {
+    diag_nn_found_     = n_nn_found;
+    diag_mean_nn_dist_ = n_nn_found > 0 ? sum_nn_dist / n_nn_found : 0.0f;
+  }
+  diag_plane_fit_ = n_plane_fit;
 
+  // GATHER — sequential: compact valid points into contiguous arrays for the
+  // Jacobian loop.
+  effect_feat_num_ = 0;
   for (int i = 0; i < feats_down_size_; i++) {
     if (point_selected_surf_[i]) {
       laser_cloud_ori_->points[effect_feat_num_] = feats_down_body_->points[i];
@@ -607,10 +655,16 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
   match_time_ += omp_get_wtime() - match_start;
   double solve_start = omp_get_wtime();
 
-  /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
-  ekfom_data.h_x = Eigen::MatrixXd::Zero(effect_feat_num_, 12);  // 23
+  // LOOP 2 — PARALLEL (OpenMP safe).
+  // Each row i reads laser_cloud_ori_[i] and corr_normvec_[i] (unique per thread)
+  // and writes ekfom_data.h_x.row(i) and ekfom_data.h(i) (different memory per
+  // thread). No shared writes. s.rot / s.offset_R_L_I are read-only here.
+  ekfom_data.h_x = Eigen::MatrixXd::Zero(effect_feat_num_, 12);
   ekfom_data.h.resize(effect_feat_num_);
 
+#ifdef MP_EN
+#pragma omp parallel for
+#endif
   for (int i = 0; i < effect_feat_num_; i++) {
     const PointType &laser_p = laser_cloud_ori_->points[i];
     V3D point_this_be(laser_p.x, laser_p.y, laser_p.z);
@@ -620,15 +674,13 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
     M3D point_crossmat;
     point_crossmat << SKEW_SYM_MATRX(point_this);
 
-    /*** get the normal vector of closest surface/corner ***/
     const PointType &norm_p = corr_normvec_->points[i];
     V3D norm_vec(norm_p.x, norm_p.y, norm_p.z);
 
-    /*** calculate the Measuremnt Jacobian matrix H ***/
     V3D C(s.rot.conjugate() * norm_vec);
     V3D A(point_crossmat * C);
     if (extrinsic_est_en_) {
-      V3D B(point_be_crossmat * s.offset_R_L_I.conjugate() * C);  // s.rot.conjugate()*norm_vec);
+      V3D B(point_be_crossmat * s.offset_R_L_I.conjugate() * C);
       ekfom_data.h_x.block<1, 12>(i, 0) << norm_p.x, norm_p.y, norm_p.z, VEC_FROM_ARRAY(A),
           VEC_FROM_ARRAY(B), VEC_FROM_ARRAY(C);
     } else {
@@ -636,7 +688,6 @@ void SPARKFastLIO2::calcHModel(state_ikfom &s, esekfom::dyn_share_datastruct<dou
           0.0, 0.0, 0.0, 0.0, 0.0;
     }
 
-    /*** Measuremnt: distance to the closest surface/corner ***/
     ekfom_data.h(i) = -norm_p.intensity;
   }
   solve_time_ += omp_get_wtime() - solve_start;
@@ -770,7 +821,7 @@ void SPARKFastLIO2::mapIncremental() {
 
 void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp) {
   odomAftMapped_.header.frame_id = map_frame_;
-  odomAftMapped_.header.stamp    = stamp;
+  odomAftMapped_.header.stamp    = this->now();
 
   setPoseStamp(state, odomAftMapped_.pose, viz_frame_);  // our template function
 
@@ -799,22 +850,35 @@ void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time
   // publish
   pub_odom_->publish(odomAftMapped_);
 
-  geometry_msgs::msg::TransformStamped transform_stamped;
-  transform_stamped.header.stamp    = odomAftMapped_.header.stamp;
-  transform_stamped.header.frame_id = map_frame_;
-  transform_stamped.child_frame_id  = odomAftMapped_.child_frame_id;
+  // Only publish TF if this stamp is strictly newer than the last one we sent.
+  // integrateIMU() (sensor thread) and processLidarAndImu() (timer thread) both
+  // call publishOdometry concurrently; without this guard the slower scan-rate
+  // stamp arrives "in the past" relative to a recent IMU-rate stamp → TF_OLD_DATA.
+  const int64_t stamp_ns = rclcpp::Time(odomAftMapped_.header.stamp).nanoseconds();
+  int64_t prev = last_tf_stamp_ns_.load(std::memory_order_relaxed);
+  while (stamp_ns > prev) {
+    if (last_tf_stamp_ns_.compare_exchange_weak(prev, stamp_ns,
+                                                std::memory_order_release,
+                                                std::memory_order_relaxed)) {
+      geometry_msgs::msg::TransformStamped transform_stamped;
+      transform_stamped.header.stamp    = odomAftMapped_.header.stamp;
+      transform_stamped.header.frame_id = map_frame_;
+      transform_stamped.child_frame_id  = odomAftMapped_.child_frame_id;
 
-  transform_stamped.transform.translation.x = odomAftMapped_.pose.pose.position.x;
-  transform_stamped.transform.translation.y = odomAftMapped_.pose.pose.position.y;
-  transform_stamped.transform.translation.z = odomAftMapped_.pose.pose.position.z;
-  transform_stamped.transform.rotation      = odomAftMapped_.pose.pose.orientation;
+      transform_stamped.transform.translation.x = odomAftMapped_.pose.pose.position.x;
+      transform_stamped.transform.translation.y = odomAftMapped_.pose.pose.position.y;
+      transform_stamped.transform.translation.z = odomAftMapped_.pose.pose.position.z;
+      transform_stamped.transform.rotation      = odomAftMapped_.pose.pose.orientation;
 
-  tf_broadcaster_->sendTransform(transform_stamped);
+      tf_broadcaster_->sendTransform(transform_stamped);
+      break;
+    }
+  }
 }
 
 void SPARKFastLIO2::publishPath(const state_ikfom &state) {
   setPoseStamp(state, msg_body_pose_, viz_frame_);
-  msg_body_pose_.header.stamp    = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
+  msg_body_pose_.header.stamp    = this->now();
   msg_body_pose_.header.frame_id = map_frame_;
 
   static int jjj = 0;
@@ -855,8 +919,7 @@ void SPARKFastLIO2::publishFrameWorld(
 
   sensor_msgs::msg::PointCloud2 cloud_msg;
   pcl::toROSMsg(*laserCloudWorld, cloud_msg);
-  // use lidar_end_time_ for the timestamp
-  cloud_msg.header.stamp    = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);  // from seconds
+  cloud_msg.header.stamp    = this->now();
   cloud_msg.header.frame_id = map_frame_;
 
   pubCloud->publish(cloud_msg);
@@ -903,21 +966,21 @@ void SPARKFastLIO2::publishFrame(
       laserCloudTransformed->points[i] = cloud_undistort_->points[i];
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
+    cloud_msg.header.stamp    = this->now();
     cloud_msg.header.frame_id = lidar_frame_;
   } else if (frame == "imu") {
     for (int i = 0; i < size; i++) {
       pclPointBodyLidarToIMU(&cloud_undistort_->points[i], &laserCloudTransformed->points[i]);
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
+    cloud_msg.header.stamp    = this->now();
     cloud_msg.header.frame_id = imu_frame_;
   } else if (frame == "base") {
     for (int i = 0; i < size; i++) {
       pclPointBodyLidarToBase(&cloud_undistort_->points[i], &laserCloudTransformed->points[i]);
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
+    cloud_msg.header.stamp    = this->now();
     cloud_msg.header.frame_id = base_frame_;
   } else {
     throw std::invalid_argument("Invalid frame has been given");
@@ -950,10 +1013,16 @@ void SPARKFastLIO2::main() {
 void SPARKFastLIO2::diagnosticCallback() {
   const int total_skipped = diag_skipped_empty_ + diag_skipped_sparse_;
 
-  // Odometry position
-  const auto &pos = latest_state_.pos;
+  const auto &pos    = latest_state_.pos;
+  const auto &vel    = latest_state_.vel;
+  const double pos_delta = (pos - diag_pos_prev_second_).norm();
 
-  // LiDAR/IMU buffer backlog (lock briefly to read sizes)
+  const double n = diag_ekf_update_count_ > 0 ? diag_ekf_update_count_ : 1;
+  const double avg_res   = diag_sum_residual_   / n;
+  const double avg_nn    = diag_nn_found_sum_   / n;
+  const double avg_plane = diag_plane_fit_sum_  / n;
+  const double avg_eff   = diag_effect_feat_sum_ / n;
+
   size_t lidar_buf_size, imu_buf_size;
   {
     std::lock_guard<std::mutex> lk(buffer_mutex_);
@@ -962,23 +1031,39 @@ void SPARKFastLIO2::diagnosticCallback() {
   }
 
   RCLCPP_INFO(this->get_logger(),
-              "[DIAG] scans: recv=%d proc=%d skip=%d | "
-              "buf: lidar=%zu imu=%zu | "
-              "map_pts=%d | "
-              "pos=(%.2f, %.2f)",
-              diag_scans_received_,
-              diag_scans_processed_,
-              total_skipped,
-              lidar_buf_size,
-              imu_buf_size,
-              ikd_tree_.size(),
-              pos(0), pos(1));
+    "[DIAG %s] "
+    "scans: recv=%d proc=%d skip=%d | "
+    "buf: lid=%zu imu=%zu | map=%d pts | "
+    "pos=(%.2f, %.2f, %.2f) vel=%.2f m/s moved=%.3f m | "
+    "EKF: updates=%d iters=%d avg_res=%.4f nn_dist=%.2f m | "
+    "pts/scan: down=%d nn=%.0f plane=%.0f eff=%.0f | "
+    "grav=%s",
+    ekf_warmup_active_ ? "WARMUP" : "RUNNING",
+    diag_scans_received_, diag_scans_processed_, total_skipped,
+    lidar_buf_size, imu_buf_size,
+    ikd_tree_.size(),
+    pos(0), pos(1), pos(2),
+    vel.norm(),
+    pos_delta,
+    diag_ekf_update_count_,
+    ekf_iter_count_,
+    avg_res,
+    diag_mean_nn_dist_,
+    diag_last_down_pts_,
+    avg_nn, avg_plane, avg_eff,
+    is_gravity_aligned_ ? "aligned" : "pending");
 
   // Reset per-second counters
-  diag_scans_received_  = 0;
-  diag_scans_processed_ = 0;
-  diag_skipped_empty_   = 0;
-  diag_skipped_sparse_  = 0;
+  diag_scans_received_   = 0;
+  diag_scans_processed_  = 0;
+  diag_skipped_empty_    = 0;
+  diag_skipped_sparse_   = 0;
+  diag_sum_residual_     = 0.0;
+  diag_ekf_update_count_ = 0;
+  diag_effect_feat_sum_  = 0;
+  diag_nn_found_sum_     = 0;
+  diag_plane_fit_sum_    = 0;
+  diag_pos_prev_second_  = pos;
 }
 
 PoseStruct SPARKFastLIO2::transformPoseWrtBaseFrame(const state_ikfom &state) const {
@@ -1081,32 +1166,6 @@ bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
   return (acc_ref - acc_curr).norm() <= acc_diff_thr;
 }
 
-void SPARKFastLIO2::pruneMapToLimit() {
-  PointVector all_points;
-  ikd_tree_.flatten(ikd_tree_.Root_Node, all_points, NOT_RECORD);
-
-  const int current_size = static_cast<int>(all_points.size());
-  if (current_size <= max_map_points_) return;
-
-  // Sort by squared distance to current LiDAR position — keep the closest points
-  const V3D lidar_xyz = kf_.get_lidar_position();
-  std::sort(all_points.begin(), all_points.end(),
-    [&lidar_xyz](const PointType &a, const PointType &b) {
-      const float da = (a.x - lidar_xyz(0)) * (a.x - lidar_xyz(0)) +
-                       (a.y - lidar_xyz(1)) * (a.y - lidar_xyz(1)) +
-                       (a.z - lidar_xyz(2)) * (a.z - lidar_xyz(2));
-      const float db = (b.x - lidar_xyz(0)) * (b.x - lidar_xyz(0)) +
-                       (b.y - lidar_xyz(1)) * (b.y - lidar_xyz(1)) +
-                       (b.z - lidar_xyz(2)) * (b.z - lidar_xyz(2));
-      return da < db;
-    });
-
-  all_points.resize(max_map_points_);
-  ikd_tree_.Build(all_points);
-
-  RCLCPP_DEBUG(this->get_logger(),
-               "Map pruned: %d -> %d pts", current_size, max_map_points_);
-}
 
 void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   if (flg_first_scan_) {
@@ -1114,6 +1173,25 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
     imu_processor_->first_lidar_time = first_lidar_time_;
     flg_first_scan_                  = false;
     return;
+  }
+
+  // During warmup: do nothing — no IMU propagation, no map building, no EKF update.
+  // When warmup ends: reset IMU processor and KD-tree so everything starts clean.
+  if (ekf_warmup_active_) {
+    const double elapsed_since_first = Measures.lidar_beg_time - first_lidar_time_;
+    if (elapsed_since_first < ekf_start_delay_s_) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000,
+        "[EKF WARMUP] %.2f / %.1f s — waiting before starting EKF",
+        elapsed_since_first, ekf_start_delay_s_);
+      return;
+    }
+    imu_processor_->Reset();
+    imu_processor_->first_lidar_time = first_lidar_time_;
+    PointVector empty;
+    ikd_tree_.Build(empty);
+    ekf_warmup_active_ = false;
+    RCLCPP_INFO(get_logger(), "[EKF] Warmup complete after %.2f s — starting clean",
+      elapsed_since_first);
   }
 
   // NOTE(hlim): Place resampling outside `Process` function to get full cloud point,
@@ -1166,7 +1244,21 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   flg_EKF_inited_ = (Measures.lidar_beg_time - first_lidar_time_) < INIT_TIME ? false : true;
   lasermapFovSegment();
 
-  down_size_filter_.setInputCloud(feats_undistort_);
+  // Clip to max_range before VoxelGrid to prevent PCL integer overflow.
+  // With det_range_=350m and leaf=0.2m, div_b can exceed INT_MAX causing phantom points.
+  if (max_range_ > 0.0f) {
+    const float max_range_sq = max_range_ * max_range_;
+    PointCloudXYZI::Ptr feats_clipped(new PointCloudXYZI);
+    feats_clipped->reserve(feats_undistort_->size());
+    for (const auto &pt : feats_undistort_->points) {
+      if (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z <= max_range_sq) {
+        feats_clipped->push_back(pt);
+      }
+    }
+    down_size_filter_.setInputCloud(feats_clipped);
+  } else {
+    down_size_filter_.setInputCloud(feats_undistort_);
+  }
   down_size_filter_.filter(*feats_down_body_);
   feats_down_size_ = feats_down_body_->points.size();
 
@@ -1204,7 +1296,18 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
 
   nearest_points_.resize(feats_down_size_);
 
+
+  // Log the full point-reduction pipeline before the EKF update
+  RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000,
+    "[PIPELINE] undistort=%d → filter(1/%d)=%zu → voxel(%.2fm)=%d",
+    diag_last_raw_pts_,
+    point_filter_num_,
+    feats_undistort_->size(),
+    filter_size_map_min_,
+    feats_down_size_);
+
   /*** iterated state estimation ***/
+  ekf_iter_count_ = 0;  // reset before update; calcHModel increments it each iteration
   double t_update_start = omp_get_wtime();
   double solve_H_time   = 0;
   kf_.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
@@ -1252,6 +1355,26 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   latest_state_.pos = R_gravity_aligned_ * latest_state_.pos;
   latest_state_.rot = R_gravity_aligned_ * latest_state_.rot;
 
+  // Accumulate EKF stats for the 1-Hz diagnostic
+  diag_sum_residual_    += res_mean_last_;
+  diag_effect_feat_sum_ += effect_feat_num_;
+  diag_nn_found_sum_    += diag_nn_found_;
+  diag_plane_fit_sum_   += diag_plane_fit_;
+  diag_ekf_update_count_++;
+
+  RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000,
+    "[EKF UPDATE] iters=%d | "
+    "pts: down=%d nn=%d plane=%d eff=%d | "
+    "res=%.4f mean_nn_dist=%.2f m | "
+    "pos=(%.3f, %.3f, %.3f) vel=%.3f m/s | "
+    "grav=%s",
+    ekf_iter_count_,
+    feats_down_size_, diag_nn_found_, diag_plane_fit_, effect_feat_num_,
+    res_mean_last_, diag_mean_nn_dist_,
+    latest_state_.pos(0), latest_state_.pos(1), latest_state_.pos(2),
+    latest_state_.vel.norm(),
+    is_gravity_aligned_ ? "aligned" : "pending");
+
   if (enable_gravity_alignment_ && !is_gravity_aligned_ && !base_frame_.empty()) {
     RCLCPP_DEBUG(this->get_logger(),
                  "Gravity alignment is enabled but not yet completed. Waiting for alignment...");
@@ -1261,12 +1384,9 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   diag_scans_processed_++;
 
   /******* Publish topics *******/
-  const auto stamp = rclcpp::Time(static_cast<int64_t>(lidar_end_time_ * 1e9), RCL_ROS_TIME);
+  const auto stamp = this->now();
   publishOdometry(latest_state_, stamp);
   mapIncremental();
-  if (ikd_tree_.size() > max_map_points_) {
-    pruneMapToLimit();
-  }
 
   if (path_en_) {
     publishPath(latest_state_);
@@ -1276,6 +1396,28 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
     if (scan_lidar_pub_en_) publishFrame(pub_cloud_lidar_, "lidar");
     if (scan_body_pub_en_) publishFrame(pub_cloud_body_, "imu");
     if (scan_base_pub_en_) publishFrame(pub_cloud_base_, "base");
+  }
+
+  // Debug: publish each pipeline stage in world frame for visual comparison
+  {
+    const auto stamp = this->now();
+    auto publishDebugCloud = [&](PointCloudXYZI::Ptr cloud,
+                                 rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub) {
+      PointCloudXYZI cloud_world;
+      cloud_world.resize(cloud->size());
+      for (size_t i = 0; i < cloud->size(); i++) {
+        pclPointBodyToWorld(&cloud->points[i], &cloud_world.points[i]);
+      }
+      sensor_msgs::msg::PointCloud2 msg;
+      pcl::toROSMsg(cloud_world, msg);
+      msg.header.stamp    = stamp;
+      msg.header.frame_id = map_frame_;
+      pub->publish(msg);
+    };
+
+    publishDebugCloud(cloud_undistort_,  pub_debug_raw_);
+    publishDebugCloud(feats_undistort_,  pub_debug_subsampled_);
+    publishDebugCloud(feats_down_body_,  pub_debug_voxel_);
   }
 }
 // to save the map 
@@ -1350,6 +1492,198 @@ try {
 }
 }
 
+
+void SPARKFastLIO2::mapVizCallback() {
+  if (ikd_tree_.Root_Node == nullptr) return;
+
+  PointVector all_points;
+  ikd_tree_.flatten(ikd_tree_.Root_Node, all_points, NOT_RECORD);
+  if (all_points.empty()) return;
+
+  pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>());
+  cloud->points.reserve(all_points.size());
+  for (const auto &pt : all_points) {
+    cloud->points.push_back(pt);
+  }
+  cloud->width    = cloud->points.size();
+  cloud->height   = 1;
+  cloud->is_dense = true;
+
+  sensor_msgs::msg::PointCloud2 msg;
+  pcl::toROSMsg(*cloud, msg);
+  msg.header.stamp    = this->now();
+  msg.header.frame_id = map_frame_;
+  pub_map_viz_->publish(msg);
+}
+
+void SPARKFastLIO2::usvMarkerCallback() {
+  using Marker    = visualization_msgs::msg::Marker;
+  using Pt        = geometry_msgs::msg::Point;
+
+  const auto stamp          = this->now();
+  const Eigen::Vector3d &pos = latest_state_.pos;
+  const Eigen::Quaterniond q_usv(latest_state_.rot);
+
+  // Transform a body-frame offset to world-frame position
+  auto b2w = [&](double x, double y, double z) -> Eigen::Vector3d {
+    return pos + q_usv * Eigen::Vector3d(x, y, z);
+  };
+
+  // Build a geometry_msgs quaternion from an Eigen quaternion
+  auto toGeoQ = [](const Eigen::Quaterniond &q) {
+    geometry_msgs::msg::Quaternion gq;
+    gq.x = q.x(); gq.y = q.y(); gq.z = q.z(); gq.w = q.w();
+    return gq;
+  };
+
+  // Base marker at USV origin (body frame offset 0,0,0)
+  auto makeMarker = [&](int id, int type, double bx, double by, double bz) -> Marker {
+    Marker m;
+    m.header.stamp    = stamp;
+    m.header.frame_id = map_frame_;
+    m.ns              = "usv_boat";
+    m.id              = id;
+    m.type            = type;
+    m.action          = Marker::ADD;
+    auto wp           = b2w(bx, by, bz);
+    m.pose.position.x = wp.x();
+    m.pose.position.y = wp.y();
+    m.pose.position.z = wp.z();
+    m.pose.orientation = toGeoQ(q_usv);
+    return m;
+  };
+
+  // Convenience: build a geometry_msgs Point in body frame (used by TRIANGLE_LIST)
+  auto pt = [](double x, double y, double z) -> Pt {
+    Pt p; p.x = x; p.y = y; p.z = z; return p;
+  };
+
+  // Colour helper
+  auto col = [](float r, float g, float b, float a = 1.0f) {
+    std_msgs::msg::ColorRGBA c;
+    c.r = r; c.g = g; c.b = b; c.a = a;
+    return c;
+  };
+
+  const auto WOOD_DARK  = col(0.29f, 0.16f, 0.04f);
+  const auto WOOD_LIGHT = col(0.55f, 0.40f, 0.08f);
+  const auto SPAR_GREY  = col(0.25f, 0.20f, 0.15f);
+  const auto SAIL_WHITE = col(0.95f, 0.92f, 0.80f, 0.92f);
+  const auto FLAG_BLACK = col(0.05f, 0.05f, 0.05f);
+  const auto ARROW_GREEN = col(0.0f,  1.0f,  0.0f);
+
+  visualization_msgs::msg::MarkerArray arr;
+
+  // ── 1. Hull body ──────────────────────────────────────────────────────────
+  {
+    auto m = makeMarker(0, Marker::CUBE, 0.0, 0.0, 0.0);
+    m.scale.x = 1.0; m.scale.y = 0.45; m.scale.z = 0.20;
+    m.color = WOOD_DARK;
+    arr.markers.push_back(m);
+  }
+
+  // ── 2. Bow taper (squashed sphere at the front) ───────────────────────────
+  {
+    auto m = makeMarker(1, Marker::SPHERE, 0.52, 0.0, 0.0);
+    m.scale.x = 0.28; m.scale.y = 0.45; m.scale.z = 0.20;
+    m.color = WOOD_DARK;
+    arr.markers.push_back(m);
+  }
+
+  // ── 3. Deck ───────────────────────────────────────────────────────────────
+  {
+    auto m = makeMarker(2, Marker::CUBE, 0.0, 0.0, 0.113);
+    m.scale.x = 0.92; m.scale.y = 0.40; m.scale.z = 0.025;
+    m.color = WOOD_LIGHT;
+    arr.markers.push_back(m);
+  }
+
+  // ── 4. Mast (cylinder along Z) ────────────────────────────────────────────
+  {
+    auto m = makeMarker(3, Marker::CYLINDER, 0.05, 0.0, 0.825);
+    m.scale.x = 0.035; m.scale.y = 0.035; m.scale.z = 1.50;
+    m.color = SPAR_GREY;
+    arr.markers.push_back(m);
+  }
+
+  // ── 5. Crow's nest ────────────────────────────────────────────────────────
+  {
+    auto m = makeMarker(4, Marker::SPHERE, 0.05, 0.0, 1.45);
+    m.scale.x = 0.14; m.scale.y = 0.14; m.scale.z = 0.10;
+    m.color = SPAR_GREY;
+    arr.markers.push_back(m);
+  }
+
+  // ── 6. Yard arm (cylinder along Y — rotate 90° around X) ─────────────────
+  {
+    auto m = makeMarker(5, Marker::CYLINDER, 0.05, 0.0, 1.10);
+    Eigen::Quaterniond local(Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitX()));
+    m.pose.orientation = toGeoQ(q_usv * local);
+    m.scale.x = 0.03; m.scale.y = 0.03; m.scale.z = 1.05;
+    m.color = SPAR_GREY;
+    arr.markers.push_back(m);
+  }
+
+  // ── 7. Boom (cylinder along X — rotate 90° around Y) ─────────────────────
+  {
+    auto m = makeMarker(6, Marker::CYLINDER, -0.18, 0.0, 0.33);
+    Eigen::Quaterniond local(Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitY()));
+    m.pose.orientation = toGeoQ(q_usv * local);
+    m.scale.x = 0.025; m.scale.y = 0.025; m.scale.z = 0.50;
+    m.color = SPAR_GREY;
+    arr.markers.push_back(m);
+  }
+
+  // ── 8. Mainsail (square sail, yard → boom, TRIANGLE_LIST in body frame) ───
+  {
+    auto m = makeMarker(7, Marker::TRIANGLE_LIST, 0.0, 0.0, 0.0);
+    m.scale.x = 1.0; m.scale.y = 1.0; m.scale.z = 1.0;
+    m.color = SAIL_WHITE;
+
+    Pt A = pt( 0.05, -0.50, 1.10);  // yard left
+    Pt B = pt( 0.05,  0.50, 1.10);  // yard right
+    Pt C = pt(-0.10,  0.20, 0.34);  // boom right
+    Pt D = pt(-0.10, -0.20, 0.34);  // boom left
+
+    m.points = {A, B, C,  A, C, D};
+    m.points.insert(m.points.end(), {A, C, B,  A, D, C});
+    arr.markers.push_back(m);
+  }
+
+  // ── 9. Jib / foresail (triangle from bow to mast, body frame) ─────────────
+  {
+    auto m = makeMarker(8, Marker::TRIANGLE_LIST, 0.0, 0.0, 0.0);
+    m.scale.x = 1.0; m.scale.y = 1.0; m.scale.z = 1.0;
+    m.color = SAIL_WHITE;
+
+    Pt T = pt( 0.05,  0.0, 1.35);  // mast top
+    Pt F = pt( 0.62,  0.0, 0.14);  // bow
+    Pt B = pt( 0.05,  0.0, 0.20);  // mast base
+
+    m.points = {T, F, B,  T, B, F};
+    arr.markers.push_back(m);
+  }
+
+  // ── 10. Pirate flag (black rectangle at mast top) ─────────────────────────
+  {
+    auto m = makeMarker(9, Marker::CUBE, 0.13, 0.0, 1.61);
+    m.scale.x = 0.02; m.scale.y = 0.16; m.scale.z = 0.10;
+    m.color = FLAG_BLACK;
+    arr.markers.push_back(m);
+  }
+
+  // ── 11. Heading arrow (green, shows bow direction) ────────────────────────
+  {
+    auto m = makeMarker(10, Marker::ARROW, 0.0, 0.0, 0.0);
+    m.scale.x = 0.9;
+    m.scale.y = 0.05;
+    m.scale.z = 0.05;
+    m.color = ARROW_GREEN;
+    arr.markers.push_back(m);
+  }
+
+  pub_usv_marker_->publish(arr);
+}
 
 }  // namespace spark_fast_lio
 

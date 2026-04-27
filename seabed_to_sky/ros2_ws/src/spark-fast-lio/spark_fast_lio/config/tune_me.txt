@@ -1,0 +1,60 @@
+TUNING GUIDE — spark_fast_lio / ouster_os2.yaml
+================================================
+
+max_range + filter_size_map (VoxelGrid overflow constraint)
+------------------------------------------------------------
+PCL VoxelGrid computes a 3D integer index for each point:
+
+    idx = ix + div_x * (iy + div_y * iz)
+    where div_x = (2 * max_range) / filter_size_map
+
+If idx exceeds INT_MAX (2,147,483,647), the index wraps around and points
+get assigned to wrong voxels, producing PHANTOM POINTS at locations where
+no real surface exists. This is silent — no error is thrown.
+
+Safe combinations (stay below INT_MAX):
+
+    filter_size_map    max_range (safe limit)
+    ----------------------------------------
+    0.2 m              ~63 m
+    0.3 m              ~94 m
+    0.4 m             ~126 m
+    0.5 m             ~157 m
+    1.0 m             ~315 m
+
+INDOOR / LAB (room ~20m):
+    filter_size_map: 0.2
+    max_range: 50.0
+
+HARBOUR / NEAR-SHORE (structures up to ~150m):
+    filter_size_map: 0.5
+    max_range: 150.0
+
+LARGE OUTDOOR / OPEN WATER (structures up to ~300m):
+    filter_size_map: 1.0
+    max_range: 300.0
+
+Note: points beyond max_range are excluded from the EKF update and KD-tree
+but are still visible in the dense cloud_registered topic for visualization.
+Set max_range: 0 to disable clipping entirely (risk of phantom points).
+
+
+filter_size_map
+---------------
+Controls the VoxelGrid leaf size applied to feats_undistort_ before the EKF
+update. Smaller = denser EKF input = better accuracy but higher CPU load.
+
+    0.2 m   good for indoor / slow-moving platforms
+    0.5 m   good for harbour / outdoor
+    1.0 m   large-scale outdoor SLAM only
+
+
+point_filter_num
+----------------
+Keeps every Nth point from the raw undistorted scan before the VoxelGrid.
+Acts as a cheap pre-filter to reduce VoxelGrid input size.
+
+    1   keep all points (recommended — let VoxelGrid do the work)
+    2   halve the input (reduces EKF accuracy slightly)
+
+

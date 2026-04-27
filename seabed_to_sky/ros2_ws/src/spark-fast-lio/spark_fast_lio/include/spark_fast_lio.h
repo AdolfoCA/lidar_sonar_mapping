@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -14,6 +15,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -153,6 +155,8 @@ class SPARKFastLIO2 : public rclcpp::Node {
   void main();
 
   void diagnosticCallback();
+  void mapVizCallback();
+  void usvMarkerCallback();
 
   bool syncPackages(MeasureGroup &meas, bool verbose);
 
@@ -160,10 +164,13 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   void processLidarAndImu(MeasureGroup &Measure);
 
-  void pruneMapToLimit();
 
  private:
   std::mutex buffer_mutex_;
+
+  // Sensor callbacks run on this group so they are never blocked by the
+  // main processing timer (processLidarAndImu is expensive on Jetson).
+  rclcpp::CallbackGroup::SharedPtr sensor_cb_group_;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_lidar_;
 
@@ -179,6 +186,13 @@ class SPARKFastLIO2 : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_base_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_map_viz_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_usv_marker_;
+
+  // Debug publishers — expose intermediate pipeline stages in world frame
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_debug_raw_;         // cloud_undistort_ (raw undistorted, ~32K)
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_debug_subsampled_;  // feats_undistort_ (after point_filter_num)
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_debug_voxel_;       // feats_down_body_ (after VoxelGrid)
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr export_kdtree_service_;
 
@@ -186,9 +200,17 @@ class SPARKFastLIO2 : public rclcpp::Node {
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
+  // Guards TF publishing against out-of-order stamps from concurrent threads.
+  // integrateIMU (sensor thread) and processLidarAndImu (timer thread) both
+  // call publishOdometry; without this, the slower scan-rate TF stamp can
+  // arrive "in the past" relative to a recent IMU-rate TF → TF_OLD_DATA.
+  std::atomic<int64_t> last_tf_stamp_ns_{0};
+
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::TimerBase::SharedPtr main_loop_timer_;
   rclcpp::TimerBase::SharedPtr diag_timer_;
+  rclcpp::TimerBase::SharedPtr map_viz_timer_;
+  rclcpp::TimerBase::SharedPtr usv_marker_timer_;
 
   /*** Time Log Variables ***/
   double kdtree_incremental_time_ = 0.0;
@@ -240,6 +262,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   float res_last_[100000] = {0.0};
   float det_range_        = 300.0f;
+  float max_range_        = 50.0f;  // clip before VoxelGrid to prevent integer overflow; 0 = disabled
 
   std::mutex mtx_buffer_;
   std::condition_variable sig_buffer_;
@@ -269,7 +292,6 @@ class SPARKFastLIO2 : public rclcpp::Node {
   double filter_size_map_min_     = 0.0;
   double fov_deg_                 = 0.0;
   double cube_len_                = 0.0;
-  int    max_map_points_          = 50000;
   double total_distance_          = 0.0;
   double lidar_end_time_          = 0.0;
   double first_lidar_time_        = 0.0;
@@ -286,6 +308,19 @@ class SPARKFastLIO2 : public rclcpp::Node {
   int diag_skipped_sparse_  = 0;  // feats_down_size_ < 5 after voxel downsampling
   int diag_last_raw_pts_    = 0;  // raw point count from last scan
   int diag_last_down_pts_   = 0;  // downsampled point count from last scan
+
+  // Diagnostic state for the 1-Hz report — updated each scan, reported in diagnosticCallback()
+  // Point-pipeline stage counts (set inside calcHModel, accumulated per second)
+  int   diag_nn_found_       = 0;    // pts passing NN search (≥5 neighbors within √5 m)
+  int   diag_plane_fit_      = 0;    // pts where esti_plane() succeeded (before score gate)
+  float diag_mean_nn_dist_   = 0.0f; // mean distance to 5th NN (map density indicator)
+  int   diag_nn_found_sum_   = 0;    // accumulated nn_found across scans this second
+  int   diag_plane_fit_sum_  = 0;    // accumulated plane_fit across scans this second
+  int   ekf_iter_count_      = 0;    // how many times calcHModel was called last scan
+  double diag_sum_residual_  = 0.0;  // accumulated mean point-to-plane residual
+  int   diag_ekf_update_count_ = 0;  // EKF updates this second
+  int   diag_effect_feat_sum_  = 0;  // accumulated effective feature count
+  V3D   diag_pos_prev_second_;       // position at last diagnostic tick (for delta)
 
   int iterCount_                = 0;
   int feats_down_size_          = 0;
@@ -307,6 +342,10 @@ class SPARKFastLIO2 : public rclcpp::Node {
   bool flg_first_scan_              = true;
   bool flg_exit_                    = false;
   bool flg_EKF_inited_;
+
+  // EKF startup delay: hold off EKF updates for this many seconds after first LiDAR scan
+  double ekf_start_delay_s_ = 3.0;
+  bool   ekf_warmup_active_ = true;
 
   std::deque<V3D> global_gravity_directions_;
 

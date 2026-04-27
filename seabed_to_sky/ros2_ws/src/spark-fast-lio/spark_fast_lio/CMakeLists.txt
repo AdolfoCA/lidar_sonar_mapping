@@ -2,8 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 project(spark_fast_lio)
 
 set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g -pthread")
-set(CMAKE_CXX_FLAGS "-O3")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+  # ARM64-specific optimizations
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g -pthread -march=native -mtune=native")
+  set(CMAKE_CXX_FLAGS "-O3 -march=native -mtune=native")
+else()
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g -pthread")
+  set(CMAKE_CXX_FLAGS "-O3")
+endif()
 
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
@@ -17,17 +23,27 @@ message(STATUS "Current CPU archtecture: ${CMAKE_SYSTEM_PROCESSOR}")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)" )
   include(ProcessorCount)
   ProcessorCount(N)
-  message(STATUS "Processer number:  ${N}")
   if(N GREATER 4)
     add_definitions(-DMP_EN)
     add_definitions(-DMP_PROC_NUM=3)
-    message(STATUS "core for MP: 3")
-  elseif(N GREATER 3)
+  else()
     add_definitions(-DMP_EN)
     add_definitions(-DMP_PROC_NUM=2)
-    message(STATUS "core for MP: 2")
+  endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+  # ARM64 support (Jetson, M1, etc.)
+  include(ProcessorCount)
+  ProcessorCount(N)
+  message(STATUS "ARM64 detected with ${N} cores")
+  if(N GREATER 6)
+    add_definitions(-DMP_EN)
+    add_definitions(-DMP_PROC_NUM=4)  # Use 4 threads on 8-core Jetson
+  elseif(N GREATER 4)
+    add_definitions(-DMP_EN)
+    add_definitions(-DMP_PROC_NUM=3)
   else()
-    add_definitions(-DMP_PROC_NUM=1)
+    add_definitions(-DMP_EN)
+    add_definitions(-DMP_PROC_NUM=2)
   endif()
 else()
   add_definitions(-DMP_PROC_NUM=1)
@@ -123,6 +139,7 @@ ament_target_dependencies(
   sensor_msgs
   nav_msgs
   geometry_msgs
+  visualization_msgs
   tf2_ros
   tf2_eigen
   pcl_conversions
@@ -135,9 +152,16 @@ rclcpp_components_register_node(
   EXECUTABLE spark_lio_mapping
 )
 
+# Standalone executable with MultiThreadedExecutor so that sensor callbacks
+# (IMU, LiDAR) are never blocked by the main processing timer.
+add_executable(spark_lio_mapping_mt src/main.cpp)
+target_compile_features(spark_lio_mapping_mt PUBLIC cxx_std_20)
+target_link_libraries(spark_lio_mapping_mt spark_lio_component)
+ament_target_dependencies(spark_lio_mapping_mt rclcpp)
+
 # Install
 install(
-  TARGETS spark_lio_component
+  TARGETS spark_lio_component spark_lio_mapping_mt
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

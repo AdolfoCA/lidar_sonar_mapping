@@ -345,6 +345,7 @@ template <typename PointType>
 void KD_TREE<PointType>::Build(PointVector point_cloud) {
   if (Root_Node != nullptr) {
     delete_tree_nodes(&Root_Node);
+    Root_Node = nullptr;
   }
   if (point_cloud.size() == 0) return;
   STATIC_ROOT_NODE = new KD_TREE_NODE;

@@ -121,6 +121,10 @@ def rolling_MAD_loop(
     :return: valid indices, upper bound, lower bound
     """
     n = len(x)
+    if n == 0:
+        empty = np.array([], dtype=float)
+        return np.array([], dtype=bool), empty, empty
+
     half_window = window_size // 2
 
     # Pad x to handle the edges
@@ -154,6 +158,10 @@ def rolling_MAD(
     :return: valid indices, upper bound, lower bound
     """
     n = len(x)
+    if n == 0:
+        empty = np.array([], dtype=float)
+        return np.array([], dtype=bool), empty, empty
+
     half_window = window_size // 2
 
     # Pad x to handle the edges
