@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enP4p1s0" multicast="false" priority="default"/>
+        <!-- <NetworkInterface name="enP1p1s0" multicast="false"/> -->
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <EnableMulticastLoopback>false</EnableMulticastLoopback>
+    </General>
+    <SharedMemory>
+      <Enable>false</Enable>
+    </SharedMemory>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.53.109"/>
+        <Peer address="192.168.53.110"/>
+        <Peer address="192.168.53.111"/>
+      </Peers>
+    </Discovery>
+    <Internal>
+      <SocketReceiveBufferSize min="10MB"/>
+      <SocketSendBufferSize min="10MB"/>
+      <DeliveryQueueMaxSamples>200</DeliveryQueueMaxSamples>
+    </Internal>
+  </Domain>
+</CycloneDDS>

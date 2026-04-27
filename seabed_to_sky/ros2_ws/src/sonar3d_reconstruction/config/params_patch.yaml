@@ -1,6 +1,6 @@
 acoustic3d_patch:
   ros__parameters:  
-    use_sim_time: true
+    use_sim_time: false
     sonars:
       horizontal:
         topic: "/oculus/sonar_image"

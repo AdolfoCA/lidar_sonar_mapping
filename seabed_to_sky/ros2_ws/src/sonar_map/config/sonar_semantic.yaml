@@ -1,0 +1,102 @@
+# =============================================================================
+# sonar_semantic.yaml
+# Configuration for the full semantic sonar mapping pipeline.
+# Used by: sonar_mapping_semantic.launch.py
+#
+# Nodes configured here:
+#   - sonar_scan_ned
+#   - sonar_map_ned (sonar_map_ned_semantic executable)
+#   - object_cluster_node
+#   - sdf_fitting_node
+# =============================================================================
+
+sonar_scan_ned:
+  ros__parameters:
+    odom_frame:        "odom"
+    sonar_frame:       "blueview"
+    sonar_cloud_topic: "/blueview/point2/leading"
+    output_topic:      "sonar_scan"
+    tf_timeout:        0.5
+
+sonar_map_ned:
+  ros__parameters:
+    input_topic:    "sonar_scan"
+    output_topic:   "sonar_map"
+    odom_topic:     "odometry"
+    map_frame:      "odom"
+    voxel_size:          0.05
+    seabed_voxel_size:   0.5      # [m] coarse voxel size for seabed (must be >= voxel_size)
+    window_radius:       200.0
+    mission_log_path:    "/home/rosdev/ros2_ws/saved_maps/mission"   # dir for mission_log.csv
+    pcd_save_dir:        "/home/rosdev/ros2_ws/saved_maps/PCD"       # dir for sonar_map.pcd and bathy_map.pcd
+    global_publish_rate: 0.5    # [Hz] full accumulated map
+    source_id:           0.
+
+    # ── Seabed estimator (adaptive Kalman filter) ────────────────────────────
+    # Estimates seabed depth (h) and seabed intensity (I_seabed) online.
+
+    # -- Depth prior --
+    h_prior_mean:       12.0
+    h_prior_std:        2.0
+
+    # -- Intensity prior --
+    I_prior_mean:       530.0
+    I_prior_std:        800.0
+
+    # -- Candidate thresholds --
+    h_min_candidates:   10
+    h_max_candidates:   300
+
+    # -- Intensity measurement --
+    I_percentile:       30
+
+    # ── Object update ────────────────────────────────────────────────────────
+    lidar_topic:    "/cloud_registered"
+    epsilon_struct: 0.5
+    ellipsoid_a:    1.0
+    ellipsoid_b:    1.0
+    ellipsoid_c:    5.0
+    lambda_structure: 1.5
+    lambda_object:    2.5
+    sigma_object:     0.15
+
+sdf_fitting_node:
+  ros__parameters:
+    structure_input:          structure_clusters
+    object_input:             object_clusters
+    structure_refined_topic:  structure_refined
+    object_refined_topic:     object_refined
+    map_frame:                odom
+    voxel_size:               0.05
+    truncation_distance:      0.15
+    smoothness_weight:        0.5
+    min_cluster_voxels:       10
+
+object_cluster_node:
+  ros__parameters:
+    input_topic:     sonar_map
+    structure_topic: structure_clusters
+    object_topic:    object_clusters
+    map_frame:       odom
+    bundle_size:     200
+
+    # STRUCTURE — two-stage DBSCAN
+    structure_outlier_eps:         0.15
+    structure_outlier_min_samples: 3
+    structure_cluster_eps:         0.5
+    structure_cluster_min_samples: 5
+    structure_min_cluster_size:    20
+
+    # OBJECT — two-stage DBSCAN
+    object_outlier_eps:            0.06
+    object_outlier_min_samples:    3
+    object_cluster_eps:            0.2
+    object_cluster_min_samples:    5
+    object_min_cluster_size:       10
+
+    # ── Bathymetry map ──────────────────────────────────────────────────────
+    bathy_cell_size:    0.5
+    bathy_z_prior_mean: -2.5
+    bathy_z_prior_std:  0.5
+    bathy_q_z:          0.01
+    bathy_r_z:          0.05

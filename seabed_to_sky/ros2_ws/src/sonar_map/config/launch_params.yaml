@@ -1,0 +1,5 @@
+# Launch-time parameters (read by the launch script only, NOT passed to nodes)
+
+# semantic: 1 → launch sonar_map_ned_semantic
+#           0 → launch sonar_map_ned_no_semantic
+semantic: 0

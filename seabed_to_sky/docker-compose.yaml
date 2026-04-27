@@ -1,6 +1,7 @@
 services:
   sonar3d:
     container_name: seabed_to_sky
+    image: seabed_to_sky-sonar3d:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,7 +17,11 @@ services:
       - DISPLAY=:0
       - XDG_RUNTIME_DIR=/tmp/runtime-rosdev
       - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=53
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///cyclonedds_profile.xml
     volumes:
+      - ./cyclonedds_profile.xml:/cyclonedds_profile.xml:ro
       # X11 forwarding
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /home/adolfo/.Xauthority:/home/rosdev/.Xauthority:rw
@@ -27,10 +32,6 @@ services:
       - /dev/*:/dev/*
       # Workspace sources (bind mount for live editing)
       - ./ros2_ws/src:/home/rosdev/ros2_ws/src:cached
-      # Named volumes for build caches
-      - ros_build:/home/rosdev/ros2_ws/build
-      - ros_install:/home/rosdev/ros2_ws/install
-      - ros_log:/home/rosdev/ros2_ws/log
     network_mode: "host"
     dns:
       - 1.1.1.1
@@ -40,9 +41,4 @@ services:
     stdin_open: true
     privileged: true
     restart: always
-    command: /bin/bash -c "source /home/rosdev/ros2_ws/install/setup.bash && bash"
-
-volumes:
-  ros_build:
-  ros_install:
-  ros_log:
+    command: /bin/bash -c "[ -f /home/rosdev/ros2_ws/install/setup.bash ] && source /home/rosdev/ros2_ws/install/setup.bash; bash"

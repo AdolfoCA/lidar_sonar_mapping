@@ -28,7 +28,7 @@ def generate_launch_description():
     default_transforms = os.path.join(
         repo_root,
         "config",
-        "transforms.yaml",
+        "new_setup.yaml",
     )
 
     transforms_path = LaunchConfiguration("transforms_path")

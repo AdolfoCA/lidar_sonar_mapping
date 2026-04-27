@@ -390,7 +390,7 @@ void ImuProcess::Process(const MeasureGroup &meas,
 
       cov_acc = cov_acc_scale;
       cov_gyr = cov_gyr_scale;
-      RCLCPP_INFO(rclcpp::get_logger("imu_processing"), "IMU Initial Done");
+      RCLCPP_DEBUG(rclcpp::get_logger("imu_processing"), "IMU Initial Done");
       // RCLCPP_INFO(rclcpp::get_logger("imu_processing"),
       // "IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc
       // covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",

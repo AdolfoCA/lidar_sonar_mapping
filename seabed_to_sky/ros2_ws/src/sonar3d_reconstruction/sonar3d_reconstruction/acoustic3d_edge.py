@@ -1,6 +1,8 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from message_filters import Subscriber
 from marine_acoustic_msgs.msg import ProjectedSonarImage
@@ -43,6 +45,7 @@ class Acoustic3dEdge(Node):
                 ("sonar.topic", Parameter.Type.STRING),
                 ("sonar.threshold", Parameter.Type.DOUBLE),
                 ("sonar.min_range", Parameter.Type.DOUBLE),
+                ("sonar.max_range", Parameter.Type.DOUBLE),
                 ("sonar.sound_speed", Parameter.Type.DOUBLE),
                 ("sonar.sound_speed_actual", Parameter.Type.DOUBLE),
                 ("sonar.pitch", Parameter.Type.DOUBLE),
@@ -60,7 +63,11 @@ class Acoustic3dEdge(Node):
         )
 
         # Create subscriber and publisher
-        self.sub = Subscriber(self, ProjectedSonarImage, self.get_parameter("sonar.topic").value)
+        # Use BEST_EFFORT to match the sonar driver's publisher QoS
+        _sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.sub = Subscriber(
+            self, ProjectedSonarImage, self.get_parameter("sonar.topic").value, qos_profile=_sensor_qos
+        )
         self.pub = self.create_publisher(PointCloud2, self.get_parameter("output.topic").value, 10)
 
         # Create CvBridge
@@ -88,6 +95,10 @@ class Acoustic3dEdge(Node):
         self.lower_bound = None
         self.upper_bound = None
         self.regressor = None
+        # Raw image storage (before denoising)
+        self.raw_image = None
+        self.raw_ranges = None
+        self.raw_beams = None
 
         self.get_logger().info("Acoustic 3D Edge Node Started")
 
@@ -117,16 +128,15 @@ class Acoustic3dEdge(Node):
         # Convert the message to a numpy array
         image, self.ranges, self.beams = ProjectedSonarImage2Image(msg)
 
+        # Store raw image BEFORE any denoising (for visualization)
+        raw_image_full = image.copy()
+        raw_ranges_full = self.ranges.copy()
+        raw_beams_full = self.beams.copy()
+
         # Denoise the image
         if self.get_parameter("denoise.standard").value:
-            if self.get_parameter("output.frame_id").value == "oculus":
-                image = filter_horizontal_image(image)
-            elif self.get_parameter("output.frame_id").value == "blueview":
-                image = filter_vertical_image(image)
-            else:
-                self.get_logger().error("Invalid sonar type.")
-                return
-
+            image = filter_horizontal_image(image)
+            
         if self.get_parameter("denoise.open").value:
             kernel = np.ones((3, 1), np.uint8)
             image = cv2.morphologyEx(
@@ -141,9 +151,15 @@ class Acoustic3dEdge(Node):
 
         # Cut the image range
         start_range_idx = np.where(self.ranges >= self.get_parameter("sonar.min_range").value)[0][0]
-        self.ranges = self.ranges[start_range_idx:]
-        self.image = image[start_range_idx:, :]
+        end_range_idx = np.where(self.ranges <= self.get_parameter("sonar.max_range").value)[0][-1] + 1
+        self.ranges = self.ranges[start_range_idx:end_range_idx]
+        self.image = image[start_range_idx:end_range_idx, :]
         self.image_timestamp = msg.header.stamp
+
+        # Cut raw image to same range for consistent comparison
+        self.raw_image = raw_image_full[start_range_idx:end_range_idx, :]
+        self.raw_ranges = raw_ranges_full[start_range_idx:end_range_idx]
+        self.raw_beams = raw_beams_full
 
         # Get the profile
         self.profile = image2Profile(
@@ -161,6 +177,8 @@ class Acoustic3dEdge(Node):
 
         if self.get_parameter("denoise.MAD").value:
             self.profile = self.profile.filter_valid()
+            if len(self.profile.x) == 0:
+                return
             self.profile.valid, self.upper_bound, self.lower_bound = rolling_MAD(self.profile.x, 39, 3.0)
 
         # Create the PointCloud2 message
@@ -214,6 +232,24 @@ class Acoustic3dEdge(Node):
 
             # Close the figure
             plt.close(fig)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # NEW: Save RAW sonar image (before denoising, without leading edge)
+            # ═══════════════════════════════════════════════════════════════════
+            if self.raw_image is not None and self.raw_ranges is not None and self.raw_beams is not None:
+                fig_raw, ax_raw = plt.subplots(1, 1, figsize=fig_size)
+                # Plot the raw sonar image in cartesian coordinates (fan shape)
+                x_raw, y_raw = polar2cartesian(self.raw_ranges, self.raw_beams)
+                plot_sonar_image_cartesian(ax_raw, self.raw_image, y_raw, x_raw)
+                
+                # Save raw image with _raw suffix
+                filepath_raw = os.path.join(self.output_folder, f"sonar_image_raw_{readable_timestamp}.png")
+                plt.tight_layout()
+                plt.savefig(filepath_raw)
+                self.get_logger().debug(f"Saved raw image to {filepath_raw}")
+                plt.close(fig_raw)
+            # ═══════════════════════════════════════════════════════════════════
+
             if (
                 self.lower_bound is not None
                 and self.upper_bound is not None

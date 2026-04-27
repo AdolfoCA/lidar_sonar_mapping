@@ -1,0 +1,147 @@
+# =============================================================================
+# sonar_scan_ned.yaml
+# Configuration for the sonar_scan_NED node
+# Package: spark_fast_lio (or wherever the node lives)
+#
+# This node reads sonar points in the sonar sensor frame, looks up the full
+# TF chain to odom via tf_static_publisher, and republishes in the odom frame.
+#
+# When swapping sonar, change ONLY the two marked lines.
+# =============================================================================
+
+# sonar.yaml
+sonar_scan_ned:
+  ros__parameters:
+    odom_frame:        "odom"
+    sonar_frame:       "blueview"
+    sonar_cloud_topic: "/blueview/point2/leading"
+    output_topic:      "sonar_scan"
+    tf_timeout:        10.0
+    scan_publish_rate: 5.0 
+
+sonar_map_ned:
+  ros__parameters:
+    input_topic:    "sonar_scan"
+    output_topic:   "sonar_map"
+    odom_topic:     "odometry"
+    map_frame:      "odom"
+    voxel_size:          0.05
+    seabed_voxel_size:   0.5      # [m] coarse voxel size for seabed (must be >= voxel_size)
+    window_radius:       200.0
+    mission_log_path:    "/home/rosdev/ros2_ws/saved_maps/mission"   # dir for mission_log.csv
+    pcd_save_dir:        "/home/rosdev/ros2_ws/saved_maps/PCD"       # dir for sonar_map.pcd and bathy_map.pcd
+    global_publish_rate: 0.5    # [Hz] full accumulated map
+    source_id:           0.
+
+    #input_topic: "sonar_scan"
+    #output_topic: "sonar_map"
+    #map_frame: "odom"
+    #max_points: 10000000
+    #publish_rate: 1.0
+
+    # ── Seabed estimator (adaptive Kalman filter) ────────────────────────────
+    # Estimates seabed depth (h) and seabed intensity (I_seabed) online.
+    # Both use a scalar Kalman filter: predict (add process noise) → update (new scan).
+
+    # -- Depth prior --
+    # h_prior_mean: initial guess for seabed depth below USV [m, positive downward].
+    #   Set to your expected operating depth. The filter will converge from here.
+    h_prior_mean:       2.5
+    # h_prior_std: initial uncertainty on h [m]. Wide = faster convergence to true depth.
+    h_prior_std:        0.5
+
+    # -- Intensity prior --
+    # I_prior_mean: initial guess for typical seabed intensity [raw uint16 counts].
+    I_prior_mean:       84.0
+    # I_prior_std: initial uncertainty on I. Wide prior lets the data drive convergence.
+    I_prior_std:        10.0
+
+    # -- Candidate thresholds --
+    # h_min_candidates: minimum number of intensity-confirmed seabed points in a scan
+    #   needed to trigger a filter update. Scans below this are ignored entirely.
+    h_min_candidates:   10
+    # h_max_candidates: reference point count for a full-confidence scan.
+    #   Sets the scale of the adaptive measurement noise:
+    #     r_h_adaptive = r_h_base * (h_max_candidates / m)
+    #   where m = actual confirmed seabed points in this scan.
+    #   When m == h_max_candidates → full trust. When m << h_max_candidates → weak update.
+    #   Set to the typical point count of a good seabed scan at your operating depth.
+    h_max_candidates:   300
+
+    # -- Intensity measurement --
+    # I_percentile: which percentile of shallow non-zero returns is used as I_meas.
+    #   A low value (25-35) targets the dominant low-intensity seabed cluster.
+    #   Increase if the seabed in your area is brighter than average (e.g., hard rock).
+    I_percentile:       30
+
+    # ── Object update ────────────────────────────────────────────────────────
+    # Returns with I >= I_object are classified as objects resting on the seabed.
+    # Region 1 (body):  flat α from estimated seabed_z UP TO zi, α = λ_hit·(I/I_object)
+    # Region 2 (above): Gaussian-weighted α from zi upward (sigma_object controls spread)
+    # Semantic label = 1.0 (OBJECT) → occupancy from Beta-Bernoulli, not Gaussian CDF.
+    lidar_topic:    "/map_visualization"  # accumulated LiDAR map used for structure support
+    epsilon_struct: 0.5                   # [m] XY radius for LiDAR neighbourhood
+    ellipsoid_a:    1.0                   # [m] USV exclusion ellipsoid semi-axis X
+    ellipsoid_b:    1.0                   # [m] USV exclusion ellipsoid semi-axis Y
+    ellipsoid_c:    5.0                   # [m] USV exclusion ellipsoid semi-axis Z
+    lambda_structure: 1.15     # structure threshold: I > lambda_structure * mu_I_seabed (+ LiDAR support)
+    lambda_object:    1.25     # object threshold:    I > lambda_object * mu_I_seabed (no LiDAR support)
+                               # 1.25 × 160 (seabed prior) = 200 — objects above this intensity
+    sigma_object:     0.15     # [m] Gaussian sigma above zi (uncertain object height)
+
+sdf_fitting_node:
+  ros__parameters:
+    structure_input:          structure_clusters
+    object_input:             object_clusters
+    structure_refined_topic:  structure_refined
+    object_refined_topic:     object_refined
+    map_frame:                odom
+    voxel_size:               0.05    # [m] must match sonar_map_ned
+    truncation_distance:      0.15    # [m] SDF clamp distance
+    smoothness_weight:        0.5     # λ — Laplacian smoothness weight
+    min_cluster_voxels:       10
+
+object_cluster_node:
+  ros__parameters:
+    input_topic:     sonar_map
+    structure_topic: structure_clusters
+    object_topic:    object_clusters
+    map_frame:       odom
+    bundle_size:     200           # trigger DBSCAN every N new classified voxels
+
+    # STRUCTURE — two-stage DBSCAN
+    # Stage 1 (outlier rejection): keep only voxels with at least one neighbour
+    #   within outlier_eps. Tune to ~3-4 × voxel_size (voxel_size=0.05 m → 0.15-0.2 m)
+    structure_outlier_eps:         0.15
+    structure_outlier_min_samples: 3
+    # Stage 2 (cluster grouping): connect surviving clean voxels into structures.
+    #   Tune up if the structure is still fragmented in the output.
+    structure_cluster_eps:         0.5
+    structure_cluster_min_samples: 5
+    structure_min_cluster_size:    20
+
+    # OBJECT — two-stage DBSCAN
+    object_outlier_eps:            0.06    # [m] just over 1 voxel diagonal; removes lone voxels
+    object_outlier_min_samples:    3
+    object_cluster_eps:            0.2
+    object_cluster_min_samples:    5
+    object_min_cluster_size:       10
+
+    # ── Bathymetry map ──────────────────────────────────────────────────────
+    # Cell size [m] — should be coarser than voxel_size to aggregate returns.
+    bathy_cell_size:    0.5
+
+    # Initial depth guess for new cells [m, ENU frame: negative = below vehicle].
+    # Set close to -(expected seabed depth below USV).
+    bathy_z_prior_mean: -2.5
+
+    # Initial depth uncertainty [m]. Wide prior — let the data converge.
+    bathy_z_prior_std:  0.5
+
+    # Process noise [m]: how much the seabed depth can change between updates.
+    # Keep small for a static seabed.
+    bathy_q_z:          0.01
+
+    # Measurement noise [m]: sonar range precision per return.
+    bathy_r_z:          0.05
+
