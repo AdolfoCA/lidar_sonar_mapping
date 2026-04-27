@@ -58,7 +58,7 @@ def profile_to_laserfield(
     # assemble the point cloud for ROS, the order may be different based on your coordinate frame
     profile = profile.filter_valid() if return_only_valid else profile
     points = np.column_stack(
-        (profile.x, profile.y, -profile.z, profile.intensity)
+        (profile.x, -profile.y, -profile.z, profile.intensity)
     )  # Note: the negative signs as the coordinate frame is different
     
     # ISSUE: the extracted points are flipped when concatenated with lidar

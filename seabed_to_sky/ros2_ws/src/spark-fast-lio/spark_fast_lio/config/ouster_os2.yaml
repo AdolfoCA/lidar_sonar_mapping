@@ -6,13 +6,14 @@
       imu_frame:            "os_imu"    # must match parent frame in tf_static_publisher config
       lidar_frame:          "os_lidar"
       visualization_frame:  "imu"       # odometry + TF published in IMU (os_imu) frame
+      time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     preprocess:
       lidar_type: 3  # 3 for ouster lidar 
-      scan_line: 128
+      scan_line: 64
       timestamp_unit: 3           # 0=SEC, 1=MS, 2=US, 3=NS; Ouster timestamps are in nanoseconds
-      blind: 1.0                # min range in meters
+      blind: 0.3                # min range in meters
       blind_for_human_pilot: 0.0
-      water_level: 1.0          # reject points with z < -water_level in LiDAR frame [m]; 0 = disabled
+      water_level: 0.          # reject points with z < -water_level in LiDAR frame [m]; 0 = disabled
       # Ouster PointCloud2 field name mapping
       # Set these to match the actual field names published by your Ouster driver.
       # OS2 with ouster-ros driver uses: reflectivity, ring, near_ir, t
@@ -20,22 +21,21 @@
       field_name_time: "t"
       field_name_ring: "ring"
       field_name_intensity: "intensity"
-      field_name_ambient: "near_ir"
+      field_name_ambient: "ambient"
     mapping:
-      acc_cov: 0.00041
-      gyr_cov: 0.0000023
-      b_acc_cov: 0.0001
+      acc_cov: 0.001 #0.00041
+      gyr_cov: 0.001 #0.0000023
+      b_acc_cov: 0.001
       b_gyr_cov: 0.0001
       fov_degree: 360.0
-      det_range: 240.0
+      det_range: 350.0
       extrinsic_est_en: false
-      # OS2 integrated IMU/Lidar geometry (from Ouster manual example transforms)
+      # OS2 integrated IMU/Lidar geometry — sensor faces forward, standard upright mount
       extrinsic_T: [ -0.006253, 0.011775, 0.028535 ]     # meters
-      extrinsic_R: [ -1.0,  0.0,  0.0,
-                       0.0, -1.0,  0.0,
+      extrinsic_R: [  -1.0,  0.0,  0.0,
+                       0.0,  -1.0,  0.0,
                        0.0,  0.0,  1.0 ]
 
-      filter_size_map: 0.5  # meters, for map-based filtering of points during scan-to-map matching
 
     publish:
       path_en: true
@@ -51,7 +51,7 @@
     
     dynamic_filter:
       enable: true
-      nearby_radius: 1.5  # [m] points closer than this to existing map geometry
+      nearby_radius: 3.0  # [m] points closer than this to existing map geometry
                           # that don't fit the plane are treated as moving objects
                           # and excluded from the map. Increase if you get false
                           # positives on slow-moving objects; decrease for tighter
@@ -63,4 +63,7 @@
     point_filter_num: 8                   # For pose estimation. (increased from 4 for Jetson performance)
     max_iteration: 4
     cube_side_length: 1000.0
-    max_map_points: 50000   # cap on ikd-tree size; oldest/farthest points pruned when exceeded
+
+    # tune the next two paramters with the tune_me.txt guide 
+    filter_size_map: 0.4
+    max_range: 300.0           # [m] clip points beyond this before VoxelGrid to prevent PCL integer overflow; 0 = disabled

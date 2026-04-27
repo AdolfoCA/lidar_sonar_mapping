@@ -16,8 +16,8 @@ sonar_scan_ned:
     sonar_frame:       "blueview"
     sonar_cloud_topic: "/blueview/point2/leading"
     output_topic:      "sonar_scan"
-    tf_timeout:        0.5
-    window_seconds:    30.0   # keep last N seconds of scans for continuous display; 0 = latest only
+    tf_timeout:        10.0
+    scan_publish_rate: 5.0 
 
 sonar_map_ned:
   ros__parameters:
@@ -52,10 +52,9 @@ sonar_map_ned:
 
     # -- Intensity prior --
     # I_prior_mean: initial guess for typical seabed intensity [raw uint16 counts].
-    #   BlueView M900 observed mean ~530. Adjust per sonar.
-    I_prior_mean:       530.0
+    I_prior_mean:       84.0
     # I_prior_std: initial uncertainty on I. Wide prior lets the data drive convergence.
-    I_prior_std:        300.0
+    I_prior_std:        10.0
 
     # -- Candidate thresholds --
     # h_min_candidates: minimum number of intensity-confirmed seabed points in a scan
@@ -80,13 +79,14 @@ sonar_map_ned:
     # Region 1 (body):  flat α from estimated seabed_z UP TO zi, α = λ_hit·(I/I_object)
     # Region 2 (above): Gaussian-weighted α from zi upward (sigma_object controls spread)
     # Semantic label = 1.0 (OBJECT) → occupancy from Beta-Bernoulli, not Gaussian CDF.
-    lidar_topic:    "/cloud_registered"   # kept for future use
+    lidar_topic:    "/map_visualization"  # accumulated LiDAR map used for structure support
     epsilon_struct: 0.5                   # [m] XY radius for LiDAR neighbourhood
     ellipsoid_a:    1.0                   # [m] USV exclusion ellipsoid semi-axis X
     ellipsoid_b:    1.0                   # [m] USV exclusion ellipsoid semi-axis Y
     ellipsoid_c:    5.0                   # [m] USV exclusion ellipsoid semi-axis Z
-    lambda_structure: 1.5      # structure threshold: I > lambda_structure * mu_I_seabed (+ LiDAR support)
-    lambda_object:    2.5      # object threshold:    I > lambda_object * mu_I_seabed (no LiDAR support)
+    lambda_structure: 1.15     # structure threshold: I > lambda_structure * mu_I_seabed (+ LiDAR support)
+    lambda_object:    1.25     # object threshold:    I > lambda_object * mu_I_seabed (no LiDAR support)
+                               # 1.25 × 160 (seabed prior) = 200 — objects above this intensity
     sigma_object:     0.15     # [m] Gaussian sigma above zi (uncertain object height)
 
 sdf_fitting_node:

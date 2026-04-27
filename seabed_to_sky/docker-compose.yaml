@@ -1,6 +1,7 @@
 services:
   sonar3d:
     container_name: seabed_to_sky
+    image: seabed_to_sky-sonar3d:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,7 +16,11 @@ services:
       - DISPLAY=:0
       - XDG_RUNTIME_DIR=/tmp/runtime-rosdev
       - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=53
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///cyclonedds_profile.xml
     volumes:
+      - ./cyclonedds_profile.xml:/cyclonedds_profile.xml:ro
       # X11 forwarding
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /home/adolfo/.Xauthority:/home/rosdev/.Xauthority:rw

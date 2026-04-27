@@ -4,6 +4,8 @@ ARG USERNAME=rosdev
 ARG UID=1000
 ARG GID=$UID
 
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
 # Install dependencies (union of both Dockerfiles)
 RUN apt update -q \
     && apt upgrade -q -y \
@@ -43,6 +45,7 @@ RUN apt update -q \
     ros-humble-marine-acoustic-msgs \
     ros-humble-rosidl-default-generators \
     ros-humble-message-filters \
+    ros-humble-rmw-cyclonedds-cpp \
     libyaml-dev \
     libceres-dev \
     ros-humble-foxglove-bridge \

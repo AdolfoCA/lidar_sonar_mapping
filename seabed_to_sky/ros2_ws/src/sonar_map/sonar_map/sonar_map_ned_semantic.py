@@ -178,11 +178,11 @@ I_PRIOR_MEAN         = 530.0    # [uint16] initial guess (observed mean of non-z
 I_PRIOR_STD          = 300.0    # [uint16] initial uncertainty
 I_PROCESS_NOISE      = 30.0     # [uint16] intensity is fairly stable
 I_MEAS_NOISE         = 150.0    # [uint16] per-scan measurement noise
-I_PERCENTILE         = 30       # [%] percentile of shallow non-zero returns used as I_meas
+I_PERCENTILE         = 60       # [%] percentile of shallow non-zero returns used as I_meas
                                  # low value (25-35) targets the dominant low-intensity seabed cluster
 
 # Object threshold: I > I_seabed_est * OBJECT_INTENSITY_RATIO → object hit
-OBJECT_INTENSITY_RATIO = 2.0    # objects ~2x brighter than seabed (~1060 threshold)
+OBJECT_INTENSITY_RATIO = 1.2    # objects ~2x brighter than seabed (~1060 threshold)
 
 # Column attribution widths
 SIGMA_SEABED         = 0.05     # Gaussian width for seabed regime [normalised t]
@@ -236,7 +236,7 @@ BATHY_R_Z          = 0.05   # [m]   measurement noise std per sonar return (~5 c
 #   (a) I >= lambda_structure * mu_I_seabed  (above adaptive seabed intensity baseline)
 #   (b) has LiDAR support within epsilon_struct XY radius
 # Update: single voxel alpha increment at the return point zi only.
-LIDAR_TOPIC        = '/cloud_registered'
+LIDAR_TOPIC        = '/map_visualization'
 EPSILON_STRUCT     = 0.5    # [m]   XY radius for LiDAR neighbourhood query
 ELLIPSOID_A        = 5.0    # [m]   USV exclusion ellipsoid semi-axis in X
 ELLIPSOID_B        = 5.0    # [m]   USV exclusion ellipsoid semi-axis in Y

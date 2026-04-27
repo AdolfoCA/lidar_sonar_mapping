@@ -2,14 +2,15 @@
 """
 sonar_mapping_semantic.launch.py
 ---------------------------------
-Full semantic sonar mapping pipeline:
-  1. sonar_scan_ned          — transforms leading-edge points to the odom frame
-  2. sonar_map_ned_semantic  — Beta-Bernoulli voxel map with semantic labelling
-  3. save_map                — saves map to PCD on service call
-  4. object_cluster_node     — DBSCAN clustering on structure/object voxels
-  5. sdf_fitting_node        — SDF fitting on clusters
+Launches the full semantic sonar mapping pipeline:
+  1. sonar_scan_ned       — transforms sonar scans into the odom frame via TF
+  2. sonar_map_ned_semantic — accumulates scans with semantic classification
+  3. save_map             — saves map to PCD on request
+  4. object_cluster_node  — DBSCAN clustering of object/structure voxels
+  5. sdf_fitting_node     — SDF fitting on clusters
 
-Config: sonar_semantic.yaml
+To swap sonar at launch time:
+  ros2 launch sonar_map sonar_mapping_semantic.launch.py sonar_frame:=oculus
 """
 
 import os
@@ -22,8 +23,12 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    pkg    = get_package_share_directory('sonar_map')
+    pkg = get_package_share_directory('sonar_map')
     config = os.path.join(pkg, 'config', 'sonar_semantic.yaml')
+
+    # ------------------------------------------------------------------ #
+    # Arguments                                                           #
+    # ------------------------------------------------------------------ #
 
     arg_sonar_frame = DeclareLaunchArgument(
         'sonar_frame',
@@ -34,8 +39,12 @@ def generate_launch_description():
     arg_sonar_topic = DeclareLaunchArgument(
         'sonar_cloud_topic',
         default_value='/blueview/point2/leading',
-        description='Sonar leading-edge point cloud input topic',
+        description='Sonar point cloud input topic',
     )
+
+    # ------------------------------------------------------------------ #
+    # 1. sonar_scan_ned                                                   #
+    # ------------------------------------------------------------------ #
 
     node_sonar_scan = Node(
         package='sonar_map',
@@ -49,6 +58,10 @@ def generate_launch_description():
         ],
     )
 
+    # ------------------------------------------------------------------ #
+    # 2. sonar_map_ned (semantic)                                         #
+    # ------------------------------------------------------------------ #
+
     node_sonar_map = Node(
         package='sonar_map',
         executable='sonar_map_ned_semantic',
@@ -57,12 +70,20 @@ def generate_launch_description():
         parameters=[config],
     )
 
+    # ------------------------------------------------------------------ #
+    # 3. save_map                                                         #
+    # ------------------------------------------------------------------ #
+
     node_save_map = Node(
         package='sonar_map',
         executable='save_map',
         name='save_map',
         output='screen',
     )
+
+    # ------------------------------------------------------------------ #
+    # 4. object_cluster_node                                              #
+    # ------------------------------------------------------------------ #
 
     node_object_cluster = Node(
         package='sonar_map',
@@ -72,6 +93,10 @@ def generate_launch_description():
         parameters=[config],
     )
 
+    # ------------------------------------------------------------------ #
+    # 5. sdf_fitting_node                                                 #
+    # ------------------------------------------------------------------ #
+
     node_sdf_fitting = Node(
         package='sonar_map',
         executable='sdf_fitting_node',
@@ -79,6 +104,10 @@ def generate_launch_description():
         output='screen',
         parameters=[config],
     )
+
+    # ------------------------------------------------------------------ #
+    # Assemble                                                            #
+    # ------------------------------------------------------------------ #
 
     return LaunchDescription([
         arg_sonar_frame,

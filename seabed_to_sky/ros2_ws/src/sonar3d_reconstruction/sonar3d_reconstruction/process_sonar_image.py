@@ -1,6 +1,7 @@
 import numpy as np
 import typing
 from marine_acoustic_msgs.msg import ProjectedSonarImage
+from scipy.ndimage import gaussian_filter1d
 from geometry_msgs.msg import Vector3
 import yaml
 import cv2
@@ -36,6 +37,7 @@ def ProjectedSonarImage2Image(msg: ProjectedSonarImage, normalize=False) -> np.n
     # Get the image data and reshape it according to the dtype
     dtype = dtype_mapping[msg.image.dtype]
     image = np.frombuffer(msg.image.data, dtype=dtype).reshape((nrange, nbeams))
+    image = np.flip(image, axis=0)  # Flip the image vertically to have the correct orientation (range increases downwards)
 
     # Check if beams are in the correct order (left to right) to ensure correct image orientation
     if beams[0] > beams[-1]:
@@ -44,16 +46,14 @@ def ProjectedSonarImage2Image(msg: ProjectedSonarImage, normalize=False) -> np.n
 
     image = image.astype(dtype=dtype)
 
-    # Normalise to [0, 255] using the dtype's fixed maximum so the scale is
-    # consistent across frames (a pixel value of 130/255 always means the same
-    # fraction of the sensor's full range, regardless of what this ping looks like).
+    # normalize the image to the range [0, 255]
     if normalize or dtype == np.uint16:
-        image = cv2.convertScaleAbs(image, alpha=255.0 / np.iinfo(dtype).max)
+        image = cv2.convertScaleAbs(image, alpha=(255.0 / image.max()))
 
     return image, ranges, beams
 
 
-def filter_horizontal_image(imageHorizontal, method: list = [], kernel_size=(3, 1)):
+def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_size=(3, 1)):
     """Filter the horizontal sonar image by removing the mean of the image over each beam and normalizing the image to the range [0, 255].
     
     Parameters:
@@ -64,15 +64,52 @@ def filter_horizontal_image(imageHorizontal, method: list = [], kernel_size=(3, 
     imageHorizontal -- The filtered horizontal sonar image
     """
 
+    # Per-beam background subtraction (5th percentile of each beam)
     imageHorizontal = np.maximum(
-        0, imageHorizontal - np.quantile(imageHorizontal, 0.1, axis=1)[:, None]
-    )  # Remove the mean of the image over each beam.
-    imageHorizontal = np.maximum(0, imageHorizontal - np.quantile(imageHorizontal, 0.1))
+        0, imageHorizontal - np.quantile(imageHorizontal, 0.05, axis=1)[:, None]
+    )
+
+    # Global noise floor removal
+    imageHorizontal = np.maximum(0, imageHorizontal - np.quantile(imageHorizontal, 0.05))
+
+    # Normalize to [0, 255]
     imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
+
+    # We remove additional noise introduced by high gain values in the center of the image.
+    n_bearings_right = 20
+    n_bearings_left = 20
+    mask = imageHorizontal[:, 128 - n_bearings_left : 127 + n_bearings_right] < np.percentile(imageHorizontal[:, 127 - n_bearings_left : 127 + n_bearings_right], 50)
+    imageHorizontal[:, 128 - n_bearings_left : 127 + n_bearings_right][mask] = 0
+
+    # Smooth along range axis per beam to reduce speckle, preserving leading edge gradient
+    imageHorizontal = gaussian_filter1d(imageHorizontal.astype(float), sigma=2, axis=0)
+    imageHorizontal = np.clip(imageHorizontal, 0, 255).astype(np.uint8)
+
+    if "otsu" in method:
+        # Use a soft percentile threshold instead of hard Otsu binarization
+        noise_threshold = np.percentile(imageHorizontal[imageHorizontal > 0], 20)
+        imageHorizontal = np.maximum(0, imageHorizontal.astype(float) - noise_threshold)
+        imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
+
     if "open" in method:
-        if kernel_size != 0:
-            kernel = np.ones(kernel_size, np.uint8)
-            imageHorizontal = cv2.morphologyEx(imageHorizontal, cv2.MORPH_ERODE, kernel, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
+        imageHorizontal = cv2.morphologyEx(imageHorizontal, cv2.MORPH_OPEN, kernel)
+
+    # imageHorizontal = np.maximum(
+    #     0, imageHorizontal - np.quantile(imageHorizontal, 0.1, axis=1)[:, None]
+    # )  # Remove the mean of the image over each beam.
+    # imageHorizontal = np.maximum(0, imageHorizontal - np.quantile(imageHorizontal, 0.1))
+    # imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
+    # if "otsu" in method:
+    #     imageHorizontal *= cv2.threshold(imageHorizontal, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    # if "open" in method:
+    #     if kernel_size != 0:
+    #         kernel = np.ones(kernel_size, np.uint8)
+    #         imageHorizontal = cv2.morphologyEx(imageHorizontal, cv2.MORPH_ERODE, kernel, iterations=1)
+
+    # Save the image for debugging
+    #
+    cv2.imwrite("horizontal_image.png", imageHorizontal)
 
     return imageHorizontal
 
