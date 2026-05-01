@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
@@ -20,6 +21,7 @@ from sonar3d_reconstruction.edge_detection import (
 )
 from sonar3d_reconstruction.process_sonar_image import polar2cartesian
 from sonar3d_reconstruction.sonar_to_pointcloud import profile_to_laserfield
+from sonar3d_reconstruction.profile import Profile
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -57,6 +59,8 @@ class Acoustic3dEdge(Node):
                 ("method.falling_edge", Parameter.Type.BOOL),
                 ("output.topic", Parameter.Type.STRING),
                 ("output.frame_id", Parameter.Type.STRING),
+                ("output.flipped", Parameter.Type.BOOL),
+                ("output.publish_rate", Parameter.Type.DOUBLE),
                 ("output.visualize", Parameter.Type.BOOL),
                 ("output.folder", Parameter.Type.STRING),
             ],
@@ -84,6 +88,11 @@ class Acoustic3dEdge(Node):
 
         # Callback function
         self.sub.registerCallback(self.callback)
+
+        # Rate limiting for leading edge publish
+        publish_rate = self.get_parameter("output.publish_rate").value
+        self._min_interval = Duration(seconds=1.0 / publish_rate)
+        self._last_publish_time = None
 
         # Initialize image storage
         self.image = None
@@ -181,11 +190,27 @@ class Acoustic3dEdge(Node):
                 return
             self.profile.valid, self.upper_bound, self.lower_bound = rolling_MAD(self.profile.x, 39, 3.0)
 
+        # Rate limiting
+        now = self.get_clock().now()
+        if self._last_publish_time is not None:
+            if (now - self._last_publish_time) < self._min_interval:
+                return
+        self._last_publish_time = now
+
         # Create the PointCloud2 message
+        valid_profile = self.profile.filter_valid()
+        if self.get_parameter("output.flipped").value:
+            # Mirror y to fix left/right swap (x forward direction is correct)
+            valid_profile = Profile(
+                valid_profile.range, valid_profile.bearing,
+                valid_profile.x, -valid_profile.y, valid_profile.z,
+                valid_profile.delay, valid_profile.intensity, valid_profile.valid,
+            )
         msg = profile_to_laserfield(
-            self.profile.filter_valid(),
+            valid_profile,
             msg.header.stamp,
             self.get_parameter("output.frame_id").value,
+            return_only_valid=False,
         )
 
         # Publish the message

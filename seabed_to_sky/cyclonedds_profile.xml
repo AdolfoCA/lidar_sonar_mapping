@@ -7,8 +7,10 @@
       <Interfaces>
         <NetworkInterface name="lo" multicast="false"/>
       </Interfaces>
+      <MaxMessageSize>20MB</MaxMessageSize>
     </General>
     <Discovery>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
       <Peers>
         <Peer address="localhost"/>
       </Peers>

@@ -3,12 +3,12 @@ acoustic3d_edge_horizontal:
     use_sim_time: false # Change this back to false when running on real USV
     sonar:
       topic: "/blueview_message_polar"
-      threshold: 100.
-      min_range: 1.5
+      threshold: 20. #The lower the threshold, the more points are detected and it is easier to detect obejcts. 
+      min_range: 3.0
       max_range: 20.0
       sound_speed: 1500.
       sound_speed_actual: 1482.42
-      pitch: 30.0 # degrees
+      pitch: 0.0  # SET TO ZERO IF YOU ARE USING THE TF_STATIC.
     method:
       leading_edge: True
       falling_edge: False
@@ -20,5 +20,7 @@ acoustic3d_edge_horizontal:
     output:
       topic: "/blueview/point2/leading"
       frame_id: "blueview"
+      flipped: True 
+      publish_rate: 9.0
       visualize: False
       folder: "/home/rosdev/ros2_ws/src/images/blueview"

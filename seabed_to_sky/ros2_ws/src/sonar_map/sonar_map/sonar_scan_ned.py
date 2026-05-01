@@ -30,7 +30,8 @@ class SonarScanNode(Node):
         self.declare_parameter('sonar_cloud_topic', '/blueview/point2/leading')
         self.declare_parameter('output_topic',      'sonar_scan')
         self.declare_parameter('tf_timeout',        0.5)
-        self.declare_parameter('scan_publish_rate', 5.0)  # NEW: Hz, throttle scan insertion rate
+        self.declare_parameter('scan_publish_rate', 5.0)
+        self.declare_parameter('latency_compensation_ms', 0.0)
 
         self.odom_frame  = self.get_parameter('odom_frame').value
         self.sonar_frame = self.get_parameter('sonar_frame').value
@@ -67,20 +68,25 @@ class SonarScanNode(Node):
 
     def _lookup_tf(self):
         """Return 4x4 float64 T_{odom<-sonar} or None on failure.
-        For LIVE operation (use_sim_time=False):
-            Uses Time(0) to get latest transform because sonar hardware clock 
-            (Unix wall time) and SLAM clock (Ouster boot time) are in completely 
-            different time domains and cannot be matched by timestamp.
 
-        
-        Args:
-            msg_timestamp: Header timestamp from sonar message (used if use_sim_time=True)
+        Uses Time(0) to get the latest transform first (the only way to bridge
+        the sonar Unix-wall-clock / Ouster-boot-clock mismatch), then steps back
+        by latency_compensation_ms in the Ouster-clock domain so we use the pose
+        the vehicle was actually at when the ping was transmitted.
         """
         try:
-            lookup_time = Time()
-
+            # Step 1: get latest TF — this also gives us the current Ouster-clock stamp
             ts = self.tf_buffer.lookup_transform(
-                self.odom_frame, self.sonar_frame, lookup_time, self.tf_timeout)
+                self.odom_frame, self.sonar_frame, Time(), self.tf_timeout)
+
+            latency_s = self.get_parameter('latency_compensation_ms').value / 1000.0
+            if latency_s > 0.0:
+                # Step 2: subtract latency in Ouster-clock domain and look up again
+                stamp = ts.header.stamp
+                t_ns = stamp.sec * 1_000_000_000 + stamp.nanosec - int(latency_s * 1e9)
+                compensated = Time(nanoseconds=max(t_ns, 0))
+                ts = self.tf_buffer.lookup_transform(
+                    self.odom_frame, self.sonar_frame, compensated, self.tf_timeout)
 
         except Exception as exc:
             self.get_logger().warn(f'TF lookup failed: {exc}', throttle_duration_sec=5.0)
