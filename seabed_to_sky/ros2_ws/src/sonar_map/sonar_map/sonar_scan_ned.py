@@ -26,7 +26,7 @@ class SonarScanNode(Node):
     def __init__(self):
         super().__init__('sonar_scan_ned')
         self.declare_parameter('odom_frame',        'odom')
-        self.declare_parameter('sonar_frame',       'blueview')
+        self.declare_parameter('sonar_frame',       'blueview_sonar')
         self.declare_parameter('sonar_cloud_topic', '/blueview/point2/leading')
         self.declare_parameter('output_topic',      'sonar_scan')
         self.declare_parameter('tf_timeout',        0.5)

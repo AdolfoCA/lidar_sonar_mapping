@@ -1,8 +1,8 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rclpy.duration import Duration
-from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from message_filters import Subscriber
@@ -13,27 +13,18 @@ from sonar3d_reconstruction.process_sonar_image import (
     ProjectedSonarImage2Image,
     filter_horizontal_image,
     filter_vertical_image,
+    remove_bscan_stripes,
 )
 from sonar3d_reconstruction.edge_detection import (
     image2Profile,
     ransac_on_profile,
     rolling_MAD,
+    reject_azimuth_bands,
 )
-from sonar3d_reconstruction.process_sonar_image import polar2cartesian
 from sonar3d_reconstruction.sonar_to_pointcloud import profile_to_laserfield
 from sonar3d_reconstruction.profile import Profile
 import numpy as np
 import os
-import matplotlib.pyplot as plt
-from datetime import datetime
-from sonar3d_reconstruction.plot_tools import (
-    set_size,
-    set_style,
-    get_dtu_color_palette,
-    plot_sonar_image_cartesian,
-    plot_RANSAC,
-    plot_MAD,
-)
 
 
 class Acoustic3dEdge(Node):
@@ -52,9 +43,21 @@ class Acoustic3dEdge(Node):
                 ("sonar.sound_speed_actual", Parameter.Type.DOUBLE),
                 ("sonar.pitch", Parameter.Type.DOUBLE),
                 ("denoise.standard", Parameter.Type.BOOL),
+                ("denoise.destripe", Parameter.Type.BOOL),
                 ("denoise.open", Parameter.Type.INTEGER),
                 ("denoise.RANSAC", Parameter.Type.BOOL),
                 ("denoise.MAD", Parameter.Type.BOOL),
+                # reject_azimuths_deg: dynamic_typing lets an empty YAML list
+                # ([]) be accepted — a bare DOUBLE_ARRAY declaration rejects
+                # the empty list because its element type can't be inferred,
+                # leaving the parameter uninitialized. Default [] keeps it
+                # initialized when the key is omitted entirely.
+                (
+                    "denoise.reject_azimuths_deg",
+                    [],
+                    ParameterDescriptor(dynamic_typing=True),
+                ),
+                ("denoise.reject_width_deg", 1.0),
                 ("method.leading_edge", Parameter.Type.BOOL),
                 ("method.falling_edge", Parameter.Type.BOOL),
                 ("output.topic", Parameter.Type.STRING),
@@ -66,9 +69,12 @@ class Acoustic3dEdge(Node):
             ],
         )
 
-        # Create subscriber and publisher
-        # Use BEST_EFFORT to match the sonar driver's publisher QoS
-        _sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # Create subscriber and publisher.
+        # The sonar source (driver / rosbag) publishes RELIABLE — a BEST_EFFORT
+        # subscriber is QoS-incompatible with a RELIABLE publisher and the link
+        # silently fails to (re)connect, which stops the leading-edge output.
+        # Match RELIABLE here so the subscription stays connected.
+        _sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.sub = Subscriber(
             self, ProjectedSonarImage, self.get_parameter("sonar.topic").value, qos_profile=_sensor_qos
         )
@@ -77,14 +83,13 @@ class Acoustic3dEdge(Node):
         # Create CvBridge
         self.bridge = CvBridge()
 
-        # Create output folder if it doesn't exist
+        # When visualization is enabled, sonar_image.png is overwritten every
+        # frame inside _process_frame — no timer needed.
         if self.get_parameter("output.visualize").value:
             self.get_logger().info("Visualization is enabeled for edge detection.")
             self.output_folder = self.get_parameter("output.folder").value
             if not os.path.exists(self.output_folder):
                 os.makedirs(self.output_folder)
-            # Timer to save image every second
-            self.timer = self.create_timer(10.0, self.save_image)
 
         # Callback function
         self.sub.registerCallback(self.callback)
@@ -94,20 +99,12 @@ class Acoustic3dEdge(Node):
         self._min_interval = Duration(seconds=1.0 / publish_rate)
         self._last_publish_time = None
 
-        # Initialize image storage
+        # Per-frame state (reassigned in _process_frame before use)
         self.image = None
-        self.image_timestamp = None
         self.profile = None
         self.ranges = None
         self.beams = None
         self.pitch = np.deg2rad(self.get_parameter("sonar.pitch").value)
-        self.lower_bound = None
-        self.upper_bound = None
-        self.regressor = None
-        # Raw image storage (before denoising)
-        self.raw_image = None
-        self.raw_ranges = None
-        self.raw_beams = None
 
         self.get_logger().info("Acoustic 3D Edge Node Started")
 
@@ -129,18 +126,24 @@ class Acoustic3dEdge(Node):
     def callback(self, msg: ProjectedSonarImage):
         """Callback function for the subscriber.
 
-        Parameters:
-        - msg: The message received from the subscriber.
-
-        The function converts the message to a numpy array, cuts the image range, gets the profile, creates the PointCloud2 message based on the leading edge, and publishes the message.
+        Wrapped in a try/except: a single malformed sonar frame must NOT raise
+        out of the callback. An uncaught exception makes the rclpy executor
+        stop scheduling this subscription — the node stays alive but the topic
+        goes permanently silent ("stops after some time"). Logging and
+        returning instead keeps the subscription processing later frames.
         """
+        try:
+            self._process_frame(msg)
+        except Exception as exc:  # noqa: BLE001 — deliberately broad: keep node alive
+            self.get_logger().warn(
+                f"Dropped a sonar frame due to an error in the callback: {exc!r}"
+            )
+
+    def _process_frame(self, msg: ProjectedSonarImage):
+        """Process one sonar frame: convert, denoise, detect leading edge,
+        build and publish the PointCloud2. May raise; callback() catches."""
         # Convert the message to a numpy array
         image, self.ranges, self.beams = ProjectedSonarImage2Image(msg)
-
-        # Store raw image BEFORE any denoising (for visualization)
-        raw_image_full = image.copy()
-        raw_ranges_full = self.ranges.copy()
-        raw_beams_full = self.beams.copy()
 
         # Denoise the image
         if self.get_parameter("denoise.standard").value:
@@ -158,27 +161,63 @@ class Acoustic3dEdge(Node):
         # Adjust the range based on the sound speed
         self.adjust_range_based_on_sound_speed(msg)
 
-        # Cut the image range
-        start_range_idx = np.where(self.ranges >= self.get_parameter("sonar.min_range").value)[0][0]
-        end_range_idx = np.where(self.ranges <= self.get_parameter("sonar.max_range").value)[0][-1] + 1
+        # Cut the image range. np.where(...)[0] can be empty for a malformed or
+        # out-of-range frame; indexing [0]/[-1] would then raise IndexError and
+        # kill the subscription — guard and skip the frame instead.
+        min_range = self.get_parameter("sonar.min_range").value
+        max_range = self.get_parameter("sonar.max_range").value
+        above_min = np.where(self.ranges >= min_range)[0]
+        below_max = np.where(self.ranges <= max_range)[0]
+        if above_min.size == 0 or below_max.size == 0:
+            self.get_logger().warn(
+                "Sonar frame has no range bins within "
+                f"[{min_range}, {max_range}] m — skipping frame."
+            )
+            return
+        start_range_idx = above_min[0]
+        end_range_idx = below_max[-1] + 1
+        if start_range_idx >= end_range_idx:
+            self.get_logger().warn("Empty range window after cut — skipping frame.")
+            return
         self.ranges = self.ranges[start_range_idx:end_range_idx]
         self.image = image[start_range_idx:end_range_idx, :]
-        self.image_timestamp = msg.header.stamp
 
-        # Cut raw image to same range for consistent comparison
-        self.raw_image = raw_image_full[start_range_idx:end_range_idx, :]
-        self.raw_ranges = raw_ranges_full[start_range_idx:end_range_idx]
-        self.raw_beams = raw_beams_full
+        # Remove vertical "bar line" stripes from the B-scan before edge
+        # detection. Operates on the post-cut image the detector consumes, so
+        # the debug overlay below shows the destriped result.
+        if self.get_parameter("denoise.destripe").value:
+            self.image = remove_bscan_stripes(self.image)
 
         # Get the profile
+        threshold = self.get_parameter("sonar.threshold").value
         self.profile = image2Profile(
             self.image,
             self.ranges,
             self.beams,
-            self.get_parameter("sonar.threshold").value,
+            threshold,
             "leading",
             self.pitch,
         )
+
+        # Static azimuth-band reject — kill fixed-azimuth artefacts (driver
+        # beam-pattern peaks / hardware echoes) before RANSAC/MAD see them.
+        bad_az = self.get_parameter("denoise.reject_azimuths_deg").value
+        if bad_az:
+            self.profile = reject_azimuth_bands(
+                self.profile,
+                bad_az,
+                self.get_parameter("denoise.reject_width_deg").value,
+            )
+
+        # Overwrite sonar_image.png with the post-cut filtered B-scan plus the
+        # leading-edge overlay. Updated every frame; no history is kept.
+        if self.get_parameter("output.visualize").value:
+            out_dir = self.get_parameter("output.folder").value
+            os.makedirs(out_dir, exist_ok=True)
+            self._save_horizontal_with_edges(
+                self.image, threshold,
+                out_path=os.path.join(out_dir, "sonar_image.png"),
+            )
 
         if self.get_parameter("denoise.RANSAC").value:
             self.profile = self.profile.filter_valid()
@@ -216,89 +255,50 @@ class Acoustic3dEdge(Node):
         # Publish the message
         self.pub.publish(msg)
 
-    def save_image(self):
-        if self.image is not None and self.image_timestamp is not None and self.profile is not None:
-            set_style()
-            if self.get_parameter("output.frame_id").value == "oculus":
-                fig_size = set_size("thesis", fraction=1.0, height_ratio=1.0)
-            elif self.get_parameter("output.frame_id").value == "blueview":
-                fig_size = set_size("thesis", fraction=0.6, height_ratio=1.8)
-            else:
-                set_size("thesis")
-            fig, ax1 = plt.subplots(1, 1, figsize=fig_size)
-            # Plot the sonar image
-            x, y = polar2cartesian(self.ranges, self.beams)
-            plot_sonar_image_cartesian(ax1, self.image, y, x)
-            ax1.scatter(
-                self.profile.y[self.profile.valid],
-                self.profile.x[self.profile.valid],
-                color=get_dtu_color_palette("green"),
-                label="Valid",
-                s=1,
-            )
-            ax1.scatter(
-                self.profile.y[~self.profile.valid],
-                self.profile.x[~self.profile.valid],
-                color=get_dtu_color_palette("dtured"),
-                label="Invalid",
-                s=1,
-            )
-            ax1.legend(loc="lower right")
+    def _save_horizontal_with_edges(self, image: np.ndarray, threshold: float,
+                                     out_path: str = "sonar_image.png") -> None:
+        """Overwrite ``out_path`` with the post-cut filtered horizontal sonar
+        image, leading-edge row per beam overlaid in red, plus soft blue
+        vertical lines marking the azimuths in ``denoise.reject_azimuths_deg``
+        (so the operator can see which beam columns the static azimuth-band
+        reject is dropping). 8-bit auto-scaled BGR PNG, viewable in any
+        standard image viewer.
+        """
+        if image is None or image.size == 0:
+            return
 
-            # Convert ROS timestamp to a human-readable format
-            timestamp = self.image_timestamp.sec + self.image_timestamp.nanosec * 1e-9
-            readable_timestamp = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
-            filepath = os.path.join(self.output_folder, f"sonar_image_{readable_timestamp}.png")
+        # Leading-edge row per column — same formula as image2Profile.
+        occupancy = image >= threshold
+        edges = np.argmax(occupancy, axis=0)
+        valid = occupancy[edges, np.arange(len(edges))]
+        cols_valid = np.arange(len(edges))[valid]
+        rows_valid = edges[valid]
 
-            # Adjust layout to minimize whitespace
-            plt.tight_layout()
-            plt.savefig(filepath)
-            self.get_logger().debug(f"Saved image to {filepath}")
+        # Beam columns that the static azimuth-band reject will drop — drawn
+        # as soft blue vertical lines (alpha-blended so the sonar content
+        # shows through). One column per azimuth: nearest beam to that angle.
+        reject_az_deg = self.get_parameter("denoise.reject_azimuths_deg").value
+        reject_cols = []
+        if reject_az_deg and self.beams is not None and len(self.beams) > 0:
+            beams_rad = np.asarray(self.beams, dtype=np.float64)
+            for az_deg in reject_az_deg:
+                col = int(np.argmin(np.abs(beams_rad - np.deg2rad(az_deg))))
+                if 0 <= col < image.shape[1]:
+                    reject_cols.append(col)
 
-            # Close the figure
-            plt.close(fig)
-
-            # ═══════════════════════════════════════════════════════════════════
-            # NEW: Save RAW sonar image (before denoising, without leading edge)
-            # ═══════════════════════════════════════════════════════════════════
-            if self.raw_image is not None and self.raw_ranges is not None and self.raw_beams is not None:
-                fig_raw, ax_raw = plt.subplots(1, 1, figsize=fig_size)
-                # Plot the raw sonar image in cartesian coordinates (fan shape)
-                x_raw, y_raw = polar2cartesian(self.raw_ranges, self.raw_beams)
-                plot_sonar_image_cartesian(ax_raw, self.raw_image, y_raw, x_raw)
-                
-                # Save raw image with _raw suffix
-                filepath_raw = os.path.join(self.output_folder, f"sonar_image_raw_{readable_timestamp}.png")
-                plt.tight_layout()
-                plt.savefig(filepath_raw)
-                self.get_logger().debug(f"Saved raw image to {filepath_raw}")
-                plt.close(fig_raw)
-            # ═══════════════════════════════════════════════════════════════════
-
-            if (
-                self.lower_bound is not None
-                and self.upper_bound is not None
-                and self.get_parameter("denoise.MAD").value
-            ):
-                fig, ax = plt.subplots(1, 1, figsize=set_size("thesis", fraction=1, height_ratio=1.2))
-                plot_MAD(self.profile, self.upper_bound, self.lower_bound, ax)
-                plt.tight_layout()
-                # Make time stamp for the plot
-                plt.savefig(filepath[:-4] + "_MAD.pdf")
-                plt.close()
-
-                self.lower_bound = None
-                self.upper_bound = None
-            if self.regressor is not None and self.get_parameter("denoise.RANSAC").value:
-                fig, ax = plt.subplots(1, 1, figsize=set_size("thesis", fraction=0.6, height_ratio=1.8))
-                plot_RANSAC(self.profile, self.regressor, ax)
-
-                plt.tight_layout()
-
-                # Save the plot
-                plt.savefig(filepath[:-4] + "_RANSAC.pdf")
-                self.regressor = None
-                plt.close()
+        # 8-bit auto-scaled image so the overlay is clearly visible.
+        img_max = max(int(image.max()), 1)
+        img_u8 = np.clip(image.astype(np.float32) * 255.0 / img_max, 0, 255).astype(np.uint8)
+        overlay = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+        if reject_cols:
+            layer = overlay.copy()
+            for col in reject_cols:
+                cv2.line(layer, (col, 0), (col, layer.shape[0] - 1),
+                         (255, 0, 0), 1)  # BGR blue
+            overlay = cv2.addWeighted(overlay, 0.6, layer, 0.4, 0)
+        if cols_valid.size:
+            overlay[rows_valid, cols_valid] = (0, 0, 255)  # BGR red
+        cv2.imwrite(out_path, overlay)
 
 
 def main(args=None):

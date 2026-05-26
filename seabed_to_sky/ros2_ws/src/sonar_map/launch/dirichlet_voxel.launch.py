@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-sonar_mapping_semantic.launch.py
----------------------------------
-Launches the full semantic sonar mapping pipeline:
-  1. sonar_scan_ned       — transforms sonar scans into the odom frame via TF
-  2. sonar_map_ned_semantic — accumulates scans with semantic classification
-  3. save_map             — saves map to PCD on request
-  4. object_cluster_node  — DBSCAN clustering of object/structure voxels
-  5. sdf_fitting_node     — SDF fitting on clusters
+dirichlet_voxel.launch.py
+-------------------------
+Launches the Dirichlet-Categorical voxel mapping pipeline end to end:
+
+  0. sonar_scan_ned     — transforms raw sonar returns into the odom frame
+  1. seabed_estimator   — dual scalar Kalman filter (seabed depth + intensity)
+  2. return_classifier  — labels returns FREE / SEABED / OBJECT / STRUCTURE
+  3. voxel_mapper       — Dirichlet voxel map + event-based promotion protocol
+  4. seabed_surface     — coarse seabed patches + smoothed Delaunay mesh
+
+All nodes are configured from a single file: config/dirichlet_voxel.yaml.
 
 To swap sonar at launch time:
-  ros2 launch sonar_map sonar_mapping_semantic.launch.py sonar_frame:=oculus
+  ros2 launch sonar_map dirichlet_voxel.launch.py sonar_frame:=oculus
+
+External inputs (not started here): the registered LiDAR cloud on
+`/cloud_registered` and `odometry`, both from the rest of the seabed_to_sky
+stack (or replayed from a bag).
 """
 
 import os
@@ -24,28 +31,25 @@ from launch_ros.actions import Node
 def generate_launch_description():
 
     pkg = get_package_share_directory('sonar_map')
-    config = os.path.join(pkg, 'config', 'sonar_semantic.yaml')
+    config = os.path.join(pkg, 'config', 'dirichlet_voxel.yaml')
 
     # ------------------------------------------------------------------ #
     # Arguments                                                           #
     # ------------------------------------------------------------------ #
-
     arg_sonar_frame = DeclareLaunchArgument(
         'sonar_frame',
         default_value='blueview_sonar',
         description='Active sonar TF frame: "blueview_sonar" or "oculus"',
     )
-
     arg_sonar_topic = DeclareLaunchArgument(
         'sonar_cloud_topic',
         default_value='/blueview/point2/leading',
-        description='Sonar point cloud input topic',
+        description='Raw sonar point cloud input topic',
     )
 
     # ------------------------------------------------------------------ #
-    # 1. sonar_scan_ned                                                   #
+    # 0. sonar_scan_ned  — raw sonar returns -> odom-frame `sonar_scan`   #
     # ------------------------------------------------------------------ #
-
     node_sonar_scan = Node(
         package='sonar_map',
         executable='sonar_scan_ned',
@@ -59,62 +63,55 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 2. sonar_map_ned (semantic)                                         #
+    # 1. seabed_estimator                                                 #
     # ------------------------------------------------------------------ #
-
-    node_sonar_map = Node(
+    node_seabed_estimator = Node(
         package='sonar_map',
-        executable='sonar_map_ned_semantic',
-        name='sonar_map_ned',
+        executable='seabed_estimator',
+        name='seabed_estimator',
         output='screen',
         parameters=[config],
     )
 
     # ------------------------------------------------------------------ #
-    # 3. save_map                                                         #
+    # 2. return_classifier                                                #
     # ------------------------------------------------------------------ #
-
-    node_save_map = Node(
+    node_return_classifier = Node(
         package='sonar_map',
-        executable='save_map',
-        name='save_map',
-        output='screen',
-    )
-
-    # ------------------------------------------------------------------ #
-    # 4. object_cluster_node                                              #
-    # ------------------------------------------------------------------ #
-
-    node_object_cluster = Node(
-        package='sonar_map',
-        executable='object_cluster_node',
-        name='object_cluster_node',
+        executable='return_classifier',
+        name='return_classifier',
         output='screen',
         parameters=[config],
     )
 
     # ------------------------------------------------------------------ #
-    # 5. sdf_fitting_node                                                 #
+    # 3. voxel_mapper                                                     #
     # ------------------------------------------------------------------ #
-
-    node_sdf_fitting = Node(
+    node_voxel_mapper = Node(
         package='sonar_map',
-        executable='sdf_fitting_node',
-        name='sdf_fitting_node',
+        executable='voxel_mapper',
+        name='voxel_mapper',
         output='screen',
         parameters=[config],
     )
 
     # ------------------------------------------------------------------ #
-    # Assemble                                                            #
+    # 4. seabed_surface                                                   #
     # ------------------------------------------------------------------ #
+    node_seabed_surface = Node(
+        package='sonar_map',
+        executable='seabed_surface',
+        name='seabed_surface',
+        output='screen',
+        parameters=[config],
+    )
 
     return LaunchDescription([
         arg_sonar_frame,
         arg_sonar_topic,
         node_sonar_scan,
-        node_sonar_map,
-        node_save_map,
-        node_object_cluster,
-        node_sdf_fitting,
+        node_seabed_estimator,
+        node_return_classifier,
+        node_voxel_mapper,
+        node_seabed_surface,
     ])

@@ -32,6 +32,11 @@ setup(
             'norbit_scan_ned = sonar_map.norbit_scan_ned:main',
             'norbit_map_ned = sonar_map.norbit_map_ned:main',
             'semantic_map = sonar_map.semantic_map:main',
+            # Dirichlet-Categorical voxel mapping pipeline
+            'seabed_estimator = sonar_map.seabed_estimator:main',
+            'return_classifier = sonar_map.return_classifier:main',
+            'voxel_mapper = sonar_map.voxel_mapper:main',
+            'seabed_surface = sonar_map.seabed_surface:main',
         ],
     },
 )

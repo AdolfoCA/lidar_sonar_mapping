@@ -8,7 +8,7 @@
 transforms:
 # Sonar Configuration 1: forward-facing, 30° pitch down
   - frame_id: os_imu
-    child_frame_id: blueview
+    child_frame_id: blueview_sonar
     invert: false
     translation:
       x: -0.22      

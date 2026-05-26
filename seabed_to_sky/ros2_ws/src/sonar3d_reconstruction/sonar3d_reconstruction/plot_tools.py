@@ -8,8 +8,18 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-def plot_sonar_image(ax, sonar_image, ranges, beams, title, title_font_size=10, cmap="inferno"):
-    ax.imshow(sonar_image, cmap=cmap, vmin=0, vmax=255)
+def _default_vmax(sonar_image):
+    """Pick a colormap upper bound that matches the image dtype so uint16 data
+    is not clipped to the uint8 range during visualization."""
+    if np.issubdtype(sonar_image.dtype, np.integer):
+        return np.iinfo(sonar_image.dtype).max
+    return float(sonar_image.max()) if sonar_image.size else 1.0
+
+
+def plot_sonar_image(ax, sonar_image, ranges, beams, title, title_font_size=10, cmap="inferno", vmin=0, vmax=None):
+    if vmax is None:
+        vmax = _default_vmax(sonar_image)
+    ax.imshow(sonar_image, cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_title(title, fontsize=title_font_size)
     ax.invert_yaxis()
     range_ticks = np.linspace(0, sonar_image.shape[0] - 1, num=10, dtype=int)
@@ -27,8 +37,10 @@ def plot_sonar_image(ax, sonar_image, ranges, beams, title, title_font_size=10, 
     ax.grid(False)
 
 
-def plot_sonar_image_cartesian(ax, sonar_image, y, x, title=None, title_font_size=10, cmap="inferno"):
-    ax.scatter(y, x, c=sonar_image.flatten(), cmap=cmap, vmin=0, vmax=255, s=1)
+def plot_sonar_image_cartesian(ax, sonar_image, y, x, title=None, title_font_size=10, cmap="inferno", vmin=0, vmax=None):
+    if vmax is None:
+        vmax = _default_vmax(sonar_image)
+    ax.scatter(y, x, c=sonar_image.flatten(), cmap=cmap, vmin=vmin, vmax=vmax, s=1)
     if title is not None:
         ax.set_title(title, fontsize=title_font_size)
     ax.set_xlabel("y [m]")

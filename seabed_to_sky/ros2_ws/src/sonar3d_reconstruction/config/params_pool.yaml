@@ -10,7 +10,7 @@ acoustic3d_patch:
       vertical:
         topic: "/blueview/sonar_image"
         aperture: 20.0 # degrees
-        frame_id: "blueview"
+        frame_id: "blueview_sonar"
         sound_speed: 0.0 # m/s. Set to zero to use the one given in message
       min_range: 0.5 # Set to 0 to disable
       sound_speed_actual: 1450.97 # m/s. Set to None to use the one given in message. If different in messages, they will follow horizontal sonar

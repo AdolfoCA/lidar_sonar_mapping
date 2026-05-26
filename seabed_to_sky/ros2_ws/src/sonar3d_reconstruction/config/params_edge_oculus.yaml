@@ -10,6 +10,7 @@ acoustic3d_edge_horizontal:
       pitch: 30.0 # degrees
     denoise:
       standard: True
+      destripe: False # remove vertical B-scan stripes (off for oculus by default)
       open: 1 # 0 to disable. Oherwise number of iterations
       RANSAC: False
       MAD: False

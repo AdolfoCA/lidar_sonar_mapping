@@ -3,8 +3,8 @@ acoustic3d_edge_horizontal:
     use_sim_time: false # Change this back to false when running on real USV
     sonar:
       topic: "/blueview_message_polar"
-      threshold: 20. #The lower the threshold, the more points are detected and it is easier to detect obejcts. 
-      min_range: 3.0
+      threshold: 1700. # uint16 absolute residual after background subtraction. Lower = more points / easier objects. Re-tune from the /blueview/point2/leading distribution after the uint16 switch.
+      min_range: 1.0  # bumped from 3.0 — near-range beam-pattern artefact dominates below this. Tune upward as needed.
       max_range: 20.0
       sound_speed: 1500.
       sound_speed_actual: 1482.42
@@ -14,13 +14,20 @@ acoustic3d_edge_horizontal:
       falling_edge: False
     denoise:
       standard: True
+      destripe: True   # disabled — over-attenuates the B-scan and kills the leading edge; fix the function before re-enabling
       open: 0
-      RANSAC: False
+      RANSAC: True
       MAD: True
+      # Static azimuth-band reject — drop leading-edge points within
+      # ±reject_width_deg of any azimuth in reject_azimuths_deg. Set list to
+      # [] to disable. Calibrated for BlueView fixed-azimuth artefacts.
+      reject_azimuths_deg: [-47.0, -23.0, 0.0, 23.0, 47.0]
+      #reject_azimuths_deg: []  # Disable static reject for generality. Re-enable and re-tune if you see persistent artefact lines in the point cloud.
+      reject_width_deg: 1.0  # ±deg band dropped around each azimuth in reject_azimuths_deg (only used when that list is non-empty)
     output:
       topic: "/blueview/point2/leading"
-      frame_id: "blueview"
+      frame_id: "blueview_sonar"
       flipped: True 
       publish_rate: 9.0
-      visualize: False
+      visualize: True   # write horizontal_image.png (B-scan + leading-edge overlay) per frame
       folder: "/home/rosdev/ros2_ws/src/images/blueview"

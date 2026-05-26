@@ -32,8 +32,8 @@ def generate_launch_description():
 
     arg_sonar_frame = DeclareLaunchArgument(
         'sonar_frame',
-        default_value='blueview',
-        description='Active sonar TF frame: "blueview" or "oculus"',
+        default_value='blueview_sonar',
+        description='Active sonar TF frame: "blueview_sonar" or "oculus"',
     )
 
     arg_sonar_topic = DeclareLaunchArgument(

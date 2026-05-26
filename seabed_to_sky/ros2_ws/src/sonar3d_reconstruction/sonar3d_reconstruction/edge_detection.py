@@ -81,6 +81,24 @@ def image2Profile(
     return Profile(r, beams, x, y, z, delay, intensity, valid)
 
 
+def reject_azimuth_bands(profile: Profile, bad_azimuths_deg, half_width_deg: float) -> Profile:
+    """Invalidate leading-edge points whose bearing falls within
+    ±``half_width_deg`` of any azimuth in ``bad_azimuths_deg``.
+
+    Used to suppress fixed-azimuth artefacts (driver beam-pattern peaks, hardware
+    self-reflections). Returns the same profile with ``valid`` updated in place.
+    """
+    if bad_azimuths_deg is None or len(bad_azimuths_deg) == 0:
+        return profile
+    bearings_deg = np.rad2deg(profile.bearing)
+    bad = np.zeros_like(profile.valid, dtype=bool)
+    hw = float(half_width_deg)
+    for az in bad_azimuths_deg:
+        bad |= np.abs(bearings_deg - float(az)) <= hw
+    profile.valid = np.logical_and(profile.valid, ~bad)
+    return profile
+
+
 def ransac_on_profile(
     profile: Profile, max_trials: int = 200, residual_threshold: float = 1.0
 ) -> Tuple[Profile, linear_model.RANSACRegressor]:

@@ -46,8 +46,10 @@ def ProjectedSonarImage2Image(msg: ProjectedSonarImage, normalize=False) -> np.n
 
     image = image.astype(dtype=dtype)
 
-    # normalize the image to the range [0, 255]
-    if normalize or dtype == np.uint16:
+    # Only normalize to uint8 [0, 255] when explicitly requested (e.g. for display).
+    # For the leading-edge / semantic pipeline we want to preserve the absolute
+    # uint16 intensity so downstream thresholds are physically meaningful.
+    if normalize:
         image = cv2.convertScaleAbs(image, alpha=(255.0 / image.max()))
 
     return image, ranges, beams
@@ -64,6 +66,10 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
     imageHorizontal -- The filtered horizontal sonar image
     """
 
+    # Work in float for the background-subtraction stages, then cast back to
+    # uint16 so downstream code keeps the absolute residual intensity scale.
+    imageHorizontal = imageHorizontal.astype(np.float32)
+
     # Per-beam background subtraction (5th percentile of each beam)
     imageHorizontal = np.maximum(
         0, imageHorizontal - np.quantile(imageHorizontal, 0.05, axis=1)[:, None]
@@ -72,8 +78,10 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
     # Global noise floor removal
     imageHorizontal = np.maximum(0, imageHorizontal - np.quantile(imageHorizontal, 0.05))
 
-    # Normalize to [0, 255]
-    imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
+    # Clip to uint16 range. Note: we intentionally do NOT per-frame max-normalize
+    # — that would destroy absolute intensity across frames and force the seabed
+    # estimator in the semantic mapper to chase a moving target.
+    imageHorizontal = np.clip(imageHorizontal, 0, 65535).astype(np.uint16)
 
     # We remove additional noise introduced by high gain values in the center of the image.
     n_bearings_right = 20
@@ -83,13 +91,14 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
 
     # Smooth along range axis per beam to reduce speckle, preserving leading edge gradient
     imageHorizontal = gaussian_filter1d(imageHorizontal.astype(float), sigma=2, axis=0)
-    imageHorizontal = np.clip(imageHorizontal, 0, 255).astype(np.uint8)
+    imageHorizontal = np.clip(imageHorizontal, 0, 65535).astype(np.uint16)
 
     if "otsu" in method:
-        # Use a soft percentile threshold instead of hard Otsu binarization
+        # Soft percentile threshold instead of hard Otsu binarization.
+        # Keep absolute intensities — no max-normalization here either.
         noise_threshold = np.percentile(imageHorizontal[imageHorizontal > 0], 20)
         imageHorizontal = np.maximum(0, imageHorizontal.astype(float) - noise_threshold)
-        imageHorizontal = (imageHorizontal / np.max(imageHorizontal) * 255).astype(np.uint8)
+        imageHorizontal = np.clip(imageHorizontal, 0, 65535).astype(np.uint16)
 
     if "open" in method:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
@@ -107,9 +116,10 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
     #         kernel = np.ones(kernel_size, np.uint8)
     #         imageHorizontal = cv2.morphologyEx(imageHorizontal, cv2.MORPH_ERODE, kernel, iterations=1)
 
-    # Save the image for debugging
-    #
-    cv2.imwrite("horizontal_image.png", imageHorizontal)
+    # NOTE: debug PNG of this image (with leading-edge overlay) is now saved
+    # from acoustic3d_edge.Acoustic3dEdge after the range cut and after
+    # image2Profile, so the saved image matches exactly what the leading-edge
+    # detector consumed.
 
     return imageHorizontal
 
@@ -127,6 +137,63 @@ def filter_vertical_image(imageVertical):
     # We apply a median filter for additional noise removal.
     imageVertical = cv2.medianBlur(imageVertical, 3)
     return imageVertical
+
+
+def remove_bscan_stripes(img_gray: np.ndarray) -> np.ndarray:
+    """Remove vertical "bar line" stripes from a B-scan sonar image.
+
+    Two stages:
+      1. Destriping — estimate the per-beam (vertical) stripe component as the
+         difference between a tall vertical box-filter and a wide horizontal
+         box-filter of it, then subtract it from the image.
+      2. Ring-down suppression — scale down range rows whose mean brightness is
+         more than 2x the lower-image baseline.
+
+    The input dtype (uint8 or uint16) and its value scale are preserved, so the
+    absolute-intensity threshold used by the leading-edge detector stays valid.
+
+    Parameters:
+    img_gray -- 2D grayscale B-scan, shape (range_bins, beams), uint8 or uint16
+
+    Returns:
+    clean_img -- destriped image, same dtype and shape as the input
+    """
+    orig_dtype = img_gray.dtype
+
+    # ==========================================
+    # Destriping
+    # ==========================================
+    img_f = img_gray.astype(np.float32)
+    H, W = img_f.shape
+
+    v_ksize = min(151, (H // 2) * 2 + 1)
+    h_ksize = min(51, (W // 2) * 2 + 1)
+
+    stripes_bg = cv2.boxFilter(img_f, -1, (1, v_ksize), borderType=cv2.BORDER_REPLICATE)
+    broad_bg = cv2.boxFilter(stripes_bg, -1, (h_ksize, 1), borderType=cv2.BORDER_REPLICATE)
+
+    pure_stripes = stripes_bg - broad_bg
+
+    clean_img = img_f - pure_stripes
+
+    # ==========================================
+    # Ring-down Suppression
+    # ==========================================
+    row_means = np.mean(clean_img, axis=1)
+    # Use the lower-half safe zone of the image as the normal-brightness baseline.
+    baseline = np.median(row_means[H // 2:])
+
+    if baseline > 1.0:
+        for y in range(H):
+            if row_means[y] > baseline * 2.0:
+                scale = (baseline * 2.0) / row_means[y]
+                clean_img[y, :] *= scale
+
+    # Preserve the input dtype and intensity scale — clip to the dtype max
+    # (65535 for uint16), NOT 255: the leading-edge threshold is an absolute
+    # uint16 value, so clipping to 255 would erase the whole image.
+    max_val = float(np.iinfo(orig_dtype).max)
+    return np.clip(clean_img, 0, max_val).astype(orig_dtype)
 
 
 def cut_image(

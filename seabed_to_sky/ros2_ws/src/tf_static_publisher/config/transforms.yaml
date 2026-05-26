@@ -106,7 +106,7 @@ transforms:
       z: 0.0
 
   - frame_id: blueview_joint2
-    child_frame_id: blueview
+    child_frame_id: blueview_sonar
     invert: false
     translation:
       x: 0.1

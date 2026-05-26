@@ -1,0 +1,147 @@
+# =============================================================================
+# dirichlet_voxel.yaml
+# Configuration for the Dirichlet-Categorical voxel mapping pipeline.
+# Used by: dirichlet_voxel.launch.py
+#
+# Every threshold, multiplier, resolution, gain and rate referenced by the
+# pipeline lives in this file — nothing is hard-coded in the nodes.
+#
+# Nodes configured here (in data-flow order):
+#   0. sonar_scan_ned     — transforms raw sonar returns into the odom frame
+#   1. seabed_estimator   — dual scalar Kalman filter (seabed depth + intensity)
+#   2. return_classifier  — labels returns FREE / SEABED / OBJECT / STRUCTURE
+#   3. voxel_mapper       — Dirichlet voxel map + promotion protocol
+#   4. seabed_surface     — promotion sweep + feedback (patches / mesh stripped for performance)
+#
+# Frame: odom (ENU, z up). Depth is positive-downward from the z = 0 datum.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Node 0 — sonar_scan_ned  (pipeline front-end)
+# Transforms raw leading-edge sonar returns into the odom frame and republishes
+# them on `sonar_scan`, the topic the rest of the pipeline consumes.
+# -----------------------------------------------------------------------------
+sonar_scan_ned:
+  ros__parameters:
+    odom_frame:               "odom"
+    sonar_frame:              "blueview_sonar"
+    sonar_cloud_topic:        "/blueview/point2/leading"
+    output_topic:             "sonar_scan"
+    tf_timeout:               0.5
+    scan_publish_rate:        5.0    # [Hz] throttle on republished scans
+    latency_compensation_ms:  0.0    # [ms] sonar-to-pose latency compensation
+
+# -----------------------------------------------------------------------------
+# Node 1 — seabed_estimator
+# -----------------------------------------------------------------------------
+seabed_estimator:
+  ros__parameters:
+    input_topic:        "sonar_scan"               # raw sonar returns (odom frame)
+    state_topic:        "seabed_estimator_state"   # published estimator state
+    mu_intensity_topic: "seabed_mu_intensity"      # std_msgs/Float64 mirror of mu_i — for plotting
+
+    # The depth Kalman filter was removed — only intensity is tracked here.
+    # SeabedEstimatorState still carries mu_h, var_h (always 0) for backward
+    # compatibility with subscribers; voxel_mapper ignores it.
+
+    # -- Per-scan measurement --
+    intensity_outlier_sigma: 2.0    # [-]  gate width for z_I outlier removal
+    min_returns:             10     # min returns in a scan to run an update
+
+    # -- Prior --
+    i_prior_mean: 1000.0  # [intensity]  initial seabed intensity guess
+    i_prior_std:  1000.0   # [intensity]  initial seabed intensity uncertainty
+
+    # -- Process noise from mission-scale prior --
+    # Per-scan std = variation / sqrt(_N_SCANS_FOR_DRIFT), where the scan
+    # horizon is a constant inside seabed_estimator.py (the mission's true scan
+    # count is usually unknown).
+    seabed_intensity_variation: 600.0   # [intensity]  peak-to-peak intensity over mission
+
+    # -- Adaptive measurement noise: floor + coupling * within-scan MAD --
+    i_meas_noise_floor:    50.0   # [intensity]  sensor-intrinsic intensity floor
+    i_meas_noise_coupling: 1.0    # [-]          MAD coupling for intensity
+
+# -----------------------------------------------------------------------------
+# Node 2 — return_classifier
+# -----------------------------------------------------------------------------
+return_classifier:
+  ros__parameters:
+    input_topic:   "sonar_scan"               # raw sonar returns (odom frame)
+    lidar_topic:   "/cloud_registered"        # LiDAR point cloud (odom frame)
+    state_topic:   "seabed_estimator_state"   # estimator state subscription
+    odom_topic:    "odometry"                 # USV pose, for slant range
+    output_topic:  "classified_returns"       # published classified batch
+
+    # -- Adaptive intensity thresholds (multipliers on mu_I) --
+    lambda_struct: 1.5    # [-]  tau_struct = lambda_struct * mu_I
+    lambda_obj:    2.0    # [-]  tau_obj    = lambda_obj    * mu_I  (> lambda_struct)
+
+    # -- Geometric LiDAR support score --
+    # v = (count of LiDAR points within r_lidar of the nearest LiDAR point q*)
+    #     * exp(-d / d_scale),  where d = ||return_xy - q*_xy||.
+    # voxel_mapper feeds this v into f_L = 1 - exp(-alpha_l * v) to decide the
+    # OBJECT vs STRUCTURE share of the soft responsibility.
+    r_lidar: 1.5          # [m]  full-disc radius around q*
+    d_scale: 1.0          # [m]  exponential decay length on d
+
+# -----------------------------------------------------------------------------
+# Node 3 — voxel_mapper
+# Accumulates Dirichlet evidence. It does NOT promote — it publishes the active
+# store as a snapshot and retires voxels when seabed_surface feeds keys back.
+# -----------------------------------------------------------------------------
+voxel_mapper:
+  ros__parameters:
+    input_topic:         "classified_returns"   # classified returns subscription
+    voxel_topic:         "dirichlet_voxels"     # active voxel cloud (visualisation)
+    voxel_map_topic:     "dirichlet_voxel_map"  # full snapshot for seabed_surface
+    promoted_keys_topic: "promoted_voxel_keys"  # promotion feedback (subscribed)
+    map_frame:           "odom"
+
+    r_v:             0.20   # [m]  voxel resolution
+    ring_buffer_len: 10     # [-]  recent return depths kept per voxel
+
+    # -- Dirichlet-Categorical model --
+    alpha_0:   0.01   # [-]  symmetric Dirichlet prior concentration (<< 1)
+
+    # -- Sonar elevation-angle uncertainty --
+    # A SEABED return at slant range r is uncertain in z by Delta_z = k_elev * r,
+    # so its unit mass is spread uniformly over voxels in [z - Delta_z/2,
+    # z + Delta_z/2]. Set 0 to disable the spread and revert to a single voxel.
+    k_elev: 0.0
+
+    # -- Soft Dirichlet responsibility (per-return class distribution) --
+    # u    = max(I - mu_i, 0) / mu_i
+    # r_sb  = exp(-alpha_i * u)                    SEABED
+    # r_obj = (1 - r_sb) * exp(-alpha_l * v)        OBJECT
+    # r_str = (1 - r_sb) * (1 - exp(-alpha_l * v))  STRUCTURE
+    # Sum = 1 per non-FREE return. v is the geometric LiDAR support score
+    # produced by return_classifier.
+    alpha_i: 1.5   # [-] intensity-gate sharpness (higher = sharper SB <-> non-SB)
+    alpha_l: 0.1   # [-] LiDAR-gate sharpness    (matched to typical v at r_lidar=1.5m)
+
+    # -- Publish rates --
+    active_publish_rate: 5.0    # [Hz]  visualisation cloud republish rate
+    snapshot_rate:       1.0    # [Hz]  voxel-map snapshot rate (seabed_surface input)
+    w_ref:               10.0   # [-]   tanh scale: confidence = max_pi * tanh(W/w_ref)
+    w_display_min:       1.0    # [-]   display-only lower bound on W
+
+# -----------------------------------------------------------------------------
+# Node 4 — seabed_surface
+# Stripped to the bare minimum for performance debugging: every 1/sweep_rate
+# seconds it sweeps the voxel-map snapshot, marks every SEABED-ready voxel as
+# promoted, and feeds the keys back to voxel_mapper. Patch aggregation, the
+# smoothed mesh and /debug/promoted have all been removed.
+# -----------------------------------------------------------------------------
+seabed_surface:
+  ros__parameters:
+    voxel_map_topic:     "dirichlet_voxel_map"   # voxel-map snapshot subscription
+    promoted_keys_topic: "promoted_voxel_keys"   # promotion feedback (published)
+    map_frame:           "odom"
+
+    # -- Promotion-readiness check: argmax pi == SEABED, pi >= pi_conf, W >= w_conf
+    alpha_0: 0.01     # [-]  symmetric Dirichlet prior (MUST match voxel_mapper.alpha_0)
+    pi_conf: 0.7      # [-]  posterior confidence threshold
+    w_conf:  25.0     # [-]  accumulated evidence weight threshold (~25 SEABED returns)
+
+    sweep_rate: 0.2   # [Hz]  promotion sweep / feedback rate (every 5 s)
