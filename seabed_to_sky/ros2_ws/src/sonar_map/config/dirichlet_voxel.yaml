@@ -73,17 +73,21 @@ return_classifier:
     odom_topic:    "odometry"                 # USV pose, for slant range
     output_topic:  "classified_returns"       # published classified batch
 
-    # -- Adaptive intensity thresholds (multipliers on mu_I) --
-    lambda_struct: 1.5    # [-]  tau_struct = lambda_struct * mu_I
-    lambda_obj:    2.0    # [-]  tau_obj    = lambda_obj    * mu_I  (> lambda_struct)
+    # -- Adaptive intensity threshold (multiplier on mu_I) --
+    # Single SEABED vs (STRUCTURE/OBJECT) cut: returns brighter than
+    # lambda_str_obj * mu_I are non-SEABED (then split into STRUCTURE vs OBJECT
+    # by has_support). The Dirichlet weights are driven by the soft
+    # responsibility (alpha_i), not by this threshold.
+    lambda_str_obj: 2.0   # [-]  tau_str_obj = lambda_str_obj * mu_I
 
-    # -- Geometric LiDAR support score --
-    # v = (count of LiDAR points within r_lidar of the nearest LiDAR point q*)
-    #     * exp(-d / d_scale),  where d = ||return_xy - q*_xy||.
-    # voxel_mapper feeds this v into f_L = 1 - exp(-alpha_l * v) to decide the
-    # OBJECT vs STRUCTURE share of the soft responsibility.
-    r_lidar: 1.5          # [m]  full-disc radius around q*
-    d_scale: 1.0          # [m]  exponential decay length on d
+    # -- Geometric LiDAR support factors (shipped separately, combined in voxel_mapper) --
+    # d_factor     = exp(-d / d_scale),                       d = ||return_xy - q*_xy||
+    # count_factor = 1 - exp(-alpha_count * count),           count = # LiDAR pts within r_lidar of q*
+    # voxel_mapper multiplies these into the STRUCTURE responsibility (with the
+    # intensity-similarity gate); the complement goes to OBJECT.
+    r_lidar:     0.5      # [m]  full-disc radius around q* for count_factor
+    d_scale:     0.2      # [m]  sharp distance gate length for d_factor. Smaller = stricter "I am AT a LiDAR point".
+    alpha_count: 0.05     # [-]  count_factor saturation rate (raise to make LiDAR proximity matter more)
 
 # -----------------------------------------------------------------------------
 # Node 3 — voxel_mapper
@@ -111,14 +115,45 @@ voxel_mapper:
     k_elev: 0.0
 
     # -- Soft Dirichlet responsibility (per-return class distribution) --
-    # u    = max(I - mu_i, 0) / mu_i
-    # r_sb  = exp(-alpha_i * u)                    SEABED
-    # r_obj = (1 - r_sb) * exp(-alpha_l * v)        OBJECT
-    # r_str = (1 - r_sb) * (1 - exp(-alpha_l * v))  STRUCTURE
-    # Sum = 1 per non-FREE return. v is the geometric LiDAR support score
-    # produced by return_classifier.
-    alpha_i: 1.5   # [-] intensity-gate sharpness (higher = sharper SB <-> non-SB)
-    alpha_l: 0.1   # [-] LiDAR-gate sharpness    (matched to typical v at r_lidar=1.5m)
+    # u            = max(I - mu_i, 0) / mu_i                  intensity excess
+    # r_sb         = exp(-alpha_i * u)                        SEABED responsibility
+    # f_L_geom     = d_factor * count_factor                  geometric LiDAR gate (from message)
+    # similarity   = exp(-(I - mu_str_local)^2 / (2 sigma^2)) intensity match to local structure profile
+    #                (mu_str_local = mean intensity_mean of neighbour voxels with
+    #                 d_factor_cached >= tau_sim; sigma = sigma_sim * mu_str_local;
+    #                 similarity = 1 when fewer than n_min_neighbors qualify)
+    # f_L_eff      = f_L_geom * similarity                    final STRUCTURE gate
+    # f_obj_boost  = 1 - exp(-alpha_obj * max(u - u_obj_thresh, 0))
+    #                "very bright -> OBJECT" boost; steals f_obj_boost of the
+    #                STRUCTURE share into OBJECT. 0 unless u > u_obj_thresh.
+    # r_str        = (1 - r_sb) * f_L_eff * (1 - f_obj_boost) STRUCTURE
+    # r_obj        = (1 - r_sb) * ((1 - f_L_eff) + f_L_eff * f_obj_boost)  OBJECT
+    # Sum = 1 per non-FREE return.
+    # alpha_i sharpness rule: alpha_i = ln(2) / u_half, where u_half is the
+    # intensity excess (I_decision - mu_i)/mu_i at which you want r_sb = 0.5.
+    alpha_i:           1.0    # [-]  intensity-gate sharpness (higher = sharper SB <-> non-SB)
+
+    # -- LiDAR-derived per-voxel STRUCTURE prior --
+    # On voxel creation we cache d_factor_cached from the first observation, then
+    # set alpha_str_prior = beta_struct_prior * d_factor_cached. This prior enters
+    # pi_str's numerator (and once in the shared denominator), so LiDAR-proximate
+    # voxels start as STRUCTURE and decay toward their evidence-driven posterior.
+    beta_struct_prior: 3.0    # [-]  prior strength (~pseudo-observations of STRUCTURE at d=0)
+
+    # -- Intensity-similarity gate (drives side voxels' pi_str down over time) --
+    sigma_sim:         0.3    # [-]  tolerance as fraction of mu_str_local: sigma = sigma_sim * mu_str_local
+    tau_sim:           0.5    # [-]  d_factor threshold for "structure-plausible" neighbour
+    r_sim_voxels:      2      # [-]  neighbour search radius in voxels (cube side = 2*R + 1)
+    n_min_neighbors:   3      # [-]  min qualifying neighbours before similarity gating kicks in (else similarity = 1)
+
+    # -- "Very bright -> OBJECT" boost --
+    # Once a return's intensity excess u = (I - mu_i)/mu_i exceeds u_obj_thresh,
+    # f_obj_boost = 1 - exp(-alpha_obj * (u - u_obj_thresh)) transfers part of
+    # the LiDAR-supported STRUCTURE share into OBJECT. Lets isolated very-bright
+    # returns register as OBJECT even when they sit near a LiDAR cluster.
+    # Setting alpha_obj = 0 (or u_obj_thresh = +inf) disables the boost.
+    u_obj_thresh:      0.5    # [-]  u must exceed this to engage (0.5 = I > 1.5*mu_i)
+    alpha_obj:         1.5    # [-]  saturation rate above the threshold
 
     # -- Publish rates --
     active_publish_rate: 5.0    # [Hz]  visualisation cloud republish rate

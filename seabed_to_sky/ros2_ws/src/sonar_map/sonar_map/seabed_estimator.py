@@ -9,13 +9,12 @@ state on ``state_topic`` once per scan.
 
 The depth half of the estimator was removed: with elevation-band evidence
 spreading in voxel_mapper, the global ``mu_h`` is no longer used anywhere
-downstream — the bathymetry now emerges directly from the per-voxel Bayesian
-aggregation. The ``mu_h, var_h`` fields are kept in SeabedEstimatorState for
-backward compatibility but are published as ``0.0``.
+downstream — bathymetry emerges directly from the per-voxel Bayesian
+aggregation. Only the intensity track remains.
 
-mu_I is still essential — return_classifier derives
-``tau_struct = lambda_struct * mu_I`` and ``tau_obj = lambda_obj * mu_I`` from
-the live estimate.
+mu_I is essential — return_classifier derives the single SEABED vs
+(STRUCTURE/OBJECT) intensity threshold ``tau_str_obj = lambda_str_obj * mu_I``
+from the live estimate.
 
 PER-SCAN MEASUREMENT
   z_I = median of the non-zero return intensities, after gating out values
@@ -193,10 +192,6 @@ class SeabedEstimatorNode(Node):
         out = SeabedEstimatorState()
         out.header.stamp = src_msg.header.stamp
         out.header.frame_id = src_msg.header.frame_id
-        # The depth fields are kept in the message for backward compatibility
-        # but are no longer populated — the depth KF was removed.
-        out.mu_h  = 0.0
-        out.var_h = 0.0
         out.mu_i  = float(self.kf_i_.mu)
         out.var_i = float(self.kf_i_.var)
         self.pub_.publish(out)

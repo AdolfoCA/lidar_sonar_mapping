@@ -3,8 +3,13 @@ acoustic3d_edge_horizontal:
     use_sim_time: false # Change this back to false when running on real USV
     sonar:
       topic: "/blueview_message_polar"
-      threshold: 1700. # uint16 absolute residual after background subtraction. Lower = more points / easier objects. Re-tune from the /blueview/point2/leading distribution after the uint16 switch.
-      min_range: 1.0  # bumped from 3.0 — near-range beam-pattern artefact dominates below this. Tune upward as needed.
+      # QoS reliability for the sonar subscription:
+      #   "best_effort" — universal, binds to publishers of either policy (default; matches sensor-data convention)
+      #   "reliable"    — only binds to RELIABLE publishers; rejects BEST_EFFORT bags
+      # Change this to "reliable" only if you have a specific reason; "best_effort" works for every bag we've seen.
+      qos_reliability: "best_effort"
+      threshold: 1000. # uint16 absolute residual after background subtraction. Lower = more points / easier objects. Re-tune from the /blueview/point2/leading distribution after the uint16 switch.
+      min_range: 2.0  # bumped from 3.0 — near-range beam-pattern artefact dominates below this. Tune upward as needed.
       max_range: 20.0
       sound_speed: 1500.
       sound_speed_actual: 1482.42
@@ -29,5 +34,5 @@ acoustic3d_edge_horizontal:
       frame_id: "blueview_sonar"
       flipped: True 
       publish_rate: 9.0
-      visualize: True   # write horizontal_image.png (B-scan + leading-edge overlay) per frame
+      visualize: False   # write horizontal_image.png (B-scan + leading-edge overlay) per frame
       folder: "/home/rosdev/ros2_ws/src/images/blueview"

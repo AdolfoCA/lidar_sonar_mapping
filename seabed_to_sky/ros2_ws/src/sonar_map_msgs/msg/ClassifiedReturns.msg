@@ -17,10 +17,6 @@ uint8 OBJECT=2
 uint8 STRUCTURE=3
 
 # ── Scan-level context used for this classification ──────────────────────────
-float64 seabed_depth   # mu_h used [m, positive down from the z=0 datum] — unused
-                       # downstream, kept for backward compatibility (always 0).
-float64 tau_struct     # structure intensity threshold = lambda_struct * mu_i
-float64 tau_obj        # object    intensity threshold = lambda_obj    * mu_i
 float64 mu_i           # live seabed-intensity estimate used by voxel_mapper to
                        # compute soft Dirichlet responsibilities per return.
 
@@ -32,8 +28,11 @@ float32[] intensity     # raw return intensity
 float32[] slant_range   # range from the sonar to the return [m]
 uint8[]   label         # assigned hard class (FREE vs non-FREE drives routing;
                         # actual class evidence is via soft responsibilities)
-float32[] lidar_support # geometric LiDAR-support score:
-                        #   v = (count of LiDAR pts within R of nearest LiDAR
-                        #        point q*) * exp(-d / d_scale),
-                        # where d = horizontal distance from the return to q*.
-                        # Continuous in [0, +inf); 0 when no LiDAR is available.
+float32[] d_factor      # geometric LiDAR distance gate, in [0, 1]:
+                        #   d_factor = exp(-d / d_scale)
+                        # where d = horizontal distance from the return to the
+                        # nearest LiDAR point q*. 1 when at LiDAR; sharp decay.
+float32[] count_factor  # geometric LiDAR cluster density gate, in [0, 1):
+                        #   count_factor = 1 - exp(-alpha_count * count)
+                        # where count = # LiDAR pts within r_lidar of q*.
+                        # Saturates with cluster density.

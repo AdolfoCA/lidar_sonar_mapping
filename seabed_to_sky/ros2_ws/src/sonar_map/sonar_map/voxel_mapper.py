@@ -118,7 +118,14 @@ RING_BUFFER_LEN     = 10        # [-]  recent return depths kept per voxel
 ALPHA_0             = 0.01      # [-]  symmetric Dirichlet prior (<< 1)
 K_ELEV              = 0.3       # [-]  elevation-uncertainty factor (Delta_z = k_elev * slant)
 ALPHA_I             = 1.5       # [-]  intensity-gate decay rate in the soft responsibility
-ALPHA_L             = 0.1       # [-]  LiDAR-gate decay rate in the soft responsibility
+BETA_STRUCT_PRIOR   = 3.0       # [-]  per-voxel LiDAR-derived STRUCTURE prior strength
+SIGMA_SIM           = 0.3       # [-]  intensity similarity tolerance (fraction of mu_str_local)
+TAU_SIM             = 0.5       # [-]  d_factor threshold for "structure-plausible" voxel
+R_SIM_VOXELS        = 2         # [-]  neighbour search radius in voxels (cube side = 2R+1)
+N_MIN_NEIGHBORS     = 3         # [-]  min structure-neighbours with history before similarity kicks in
+F_L_SIM_GATE        = 0.01      # [-]  skip similarity query when d_factor*count_factor below this
+U_OBJ_THRESH        = 0.5       # [-]  u must exceed this before the "very bright = OBJECT" boost engages
+ALPHA_OBJ           = 1.5       # [-]  OBJECT-boost saturation rate: f_obj_boost = 1 - exp(-alpha_obj * (u - u_obj_thresh)+)
 ACTIVE_PUBLISH_RATE = 5.0       # [Hz] active voxel cloud republish rate
 SNAPSHOT_RATE       = 1.0       # [Hz] voxel-map snapshot rate (for seabed_surface)
 W_REF               = 10.0      # [-]  tanh scale for the visualisation confidence
@@ -128,7 +135,9 @@ W_DISPLAY_MIN       = 1.0       # [-]  display-only lower bound on W
 class Voxel:
     """One active Dirichlet voxel."""
 
-    __slots__ = ('w', 'W', 'ring', 'sum_r', 'n_r')
+    __slots__ = ('w', 'W', 'ring', 'sum_r', 'n_r',
+                 'intensity_mean', 'n_obs',
+                 'd_factor_cached', 'alpha_str_prior')
 
     def __init__(self, ring_len: int):
         self.w = np.zeros(4, dtype=np.float64)   # [free, sb, obj, str]
@@ -136,6 +145,12 @@ class Voxel:
         self.ring = deque(maxlen=ring_len)        # recent return z-coords
         self.sum_r = 0.0                          # sum of contributing slant ranges
         self.n_r = 0                              # count of slant-range samples
+        # NEW — per-voxel intensity history for the similarity gate
+        self.intensity_mean = 0.0                 # running mean of observed intensities
+        self.n_obs = 0                            # # observations contributing to the mean
+        # NEW — LiDAR-derived spatial prior (set on creation, static thereafter)
+        self.d_factor_cached = 0.0                # d_factor at voxel creation
+        self.alpha_str_prior = 0.0                # beta_struct * d_factor_cached
 
 
 class VoxelMapperNode(Node):
@@ -153,7 +168,13 @@ class VoxelMapperNode(Node):
         self.declare_parameter('alpha_0',             ALPHA_0)
         self.declare_parameter('k_elev',              K_ELEV)
         self.declare_parameter('alpha_i',             ALPHA_I)
-        self.declare_parameter('alpha_l',             ALPHA_L)
+        self.declare_parameter('beta_struct_prior',   BETA_STRUCT_PRIOR)
+        self.declare_parameter('sigma_sim',           SIGMA_SIM)
+        self.declare_parameter('tau_sim',             TAU_SIM)
+        self.declare_parameter('r_sim_voxels',        R_SIM_VOXELS)
+        self.declare_parameter('n_min_neighbors',     N_MIN_NEIGHBORS)
+        self.declare_parameter('u_obj_thresh',        U_OBJ_THRESH)
+        self.declare_parameter('alpha_obj',           ALPHA_OBJ)
         self.declare_parameter('active_publish_rate', ACTIVE_PUBLISH_RATE)
         self.declare_parameter('snapshot_rate',       SNAPSHOT_RATE)
         self.declare_parameter('w_ref',               W_REF)
@@ -172,11 +193,31 @@ class VoxelMapperNode(Node):
         # uniformly over a vertical band of width k_elev * slant_range. k_elev=0
         # disables the spread and reverts to the single-voxel update.
         self._k_elev      = max(float(gp('k_elev')), 0.0)
-        # Soft-responsibility gate decay rates (intensity, LiDAR support).
+        # Soft-responsibility gate decay rates (intensity only — LiDAR factors
+        # come from the message as d_factor and count_factor).
         self._alpha_i     = max(float(gp('alpha_i')), 0.0)
-        self._alpha_l     = max(float(gp('alpha_l')), 0.0)
+        # LiDAR-derived STRUCTURE prior + intensity-similarity gate.
+        self._beta_struct = max(float(gp('beta_struct_prior')), 0.0)
+        self._sigma_sim   = max(float(gp('sigma_sim')), 1e-6)
+        self._tau_sim     = float(gp('tau_sim'))
+        self._r_sim_vox   = max(0, int(gp('r_sim_voxels')))
+        self._n_min_nbr   = max(1, int(gp('n_min_neighbors')))
+        # "Very bright -> OBJECT" boost: when u > u_obj_thresh the boost
+        # transfers part of the LiDAR-supported (STRUCTURE) mass into OBJECT.
+        self._u_obj_th    = max(float(gp('u_obj_thresh')), 0.0)
+        self._alpha_obj   = max(float(gp('alpha_obj')), 0.0)
         self._w_ref       = max(float(gp('w_ref')), 1e-6)
         self._w_disp_min  = float(gp('w_display_min'))
+
+        # Precomputed (dx, dy, dz) offsets for the structure-neighbour cube
+        # — avoids the triple-loop overhead inside the hot path.
+        R = self._r_sim_vox
+        self._nbr_offsets = [
+            (dx, dy, dz)
+            for dx in range(-R, R + 1)
+            for dy in range(-R, R + 1)
+            for dz in range(-R, R + 1)
+        ]
 
         # ── The active Dirichlet store and the set of retired voxel keys ──────
         self._store: dict = {}        # key -> Voxel
@@ -186,16 +227,17 @@ class VoxelMapperNode(Node):
         # 0.87 == 87 %). Colour the cloud by any of them in rviz to read each
         # voxel's per-class probability directly.
         self._cloud_fields = [
-            PointField(name='x',          offset=0,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='y',          offset=4,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='z',          offset=8,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='confidence', offset=12, datatype=PointField.FLOAT32, count=1),
-            PointField(name='weight',     offset=16, datatype=PointField.FLOAT32, count=1),
-            PointField(name='semantic',   offset=20, datatype=PointField.FLOAT32, count=1),
-            PointField(name='pi_free',    offset=24, datatype=PointField.FLOAT32, count=1),
-            PointField(name='pi_sb',      offset=28, datatype=PointField.FLOAT32, count=1),
-            PointField(name='pi_obj',     offset=32, datatype=PointField.FLOAT32, count=1),
-            PointField(name='pi_str',     offset=36, datatype=PointField.FLOAT32, count=1),
+            PointField(name='x',              offset=0,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='y',              offset=4,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='z',              offset=8,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='confidence',     offset=12, datatype=PointField.FLOAT32, count=1),
+            PointField(name='weight',         offset=16, datatype=PointField.FLOAT32, count=1),
+            PointField(name='semantic',       offset=20, datatype=PointField.FLOAT32, count=1),
+            PointField(name='pi_free',        offset=24, datatype=PointField.FLOAT32, count=1),
+            PointField(name='pi_sb',          offset=28, datatype=PointField.FLOAT32, count=1),
+            PointField(name='pi_obj',         offset=32, datatype=PointField.FLOAT32, count=1),
+            PointField(name='pi_str',         offset=36, datatype=PointField.FLOAT32, count=1),
+            PointField(name='intensity_mean', offset=40, datatype=PointField.FLOAT32, count=1),
         ]
 
         self._voxel_pub = self.create_publisher(
@@ -218,8 +260,10 @@ class VoxelMapperNode(Node):
             f'voxel_mapper: {gp("input_topic")} -> {gp("voxel_topic")} (cloud) '
             f'+ {gp("voxel_map_topic")} (snapshot @ {snap_rate}Hz) | '
             f'feedback <- {gp("promoted_keys_topic")} | r_v={self._r_v}m '
-            f'alpha_0={self._a0} k_elev={self._k_elev} '
-            f'alpha_i={self._alpha_i} alpha_l={self._alpha_l} '
+            f'alpha_0={self._a0} k_elev={self._k_elev} alpha_i={self._alpha_i} '
+            f'beta_struct={self._beta_struct} sigma_sim={self._sigma_sim} '
+            f'tau_sim={self._tau_sim} R_sim={self._r_sim_vox} '
+            f'u_obj_th={self._u_obj_th} alpha_obj={self._alpha_obj} '
             f'ring={self._ring_len} cloud@{cloud_rate}Hz')
 
     # ── voxel evidence update (no promotion — that lives in seabed_surface) ───
@@ -240,12 +284,18 @@ class VoxelMapperNode(Node):
             v.sum_r += float(slant)
             v.n_r += 1
 
-    def _apply_multi(self, key, dw_vec, z_ring=None, slant=None):
+    def _apply_multi(self, key, dw_vec, d_factor_for_create=0.0,
+                     z_ring=None, slant=None, intensity_for_mean=None):
         """Add a length-4 evidence vector to one voxel in a single op.
 
         Faster than three sequential ``_apply`` calls when the per-return
         update is a soft distribution over classes — one dict lookup, one
         numpy in-place add, one scalar ``W`` bump.
+
+        On voxel creation, captures ``d_factor_for_create`` into the voxel's
+        static LiDAR-derived prior (``alpha_str_prior = beta_struct * d_factor``).
+        If ``intensity_for_mean`` is provided, updates the running
+        ``intensity_mean`` (used downstream by the similarity gate).
         """
         if key in self._promoted:
             return
@@ -255,6 +305,8 @@ class VoxelMapperNode(Node):
         v = self._store.get(key)
         if v is None:
             v = Voxel(self._ring_len)
+            v.d_factor_cached = float(d_factor_for_create)
+            v.alpha_str_prior = self._beta_struct * float(d_factor_for_create)
             self._store[key] = v
         v.w += dw_vec
         v.W += total
@@ -263,6 +315,10 @@ class VoxelMapperNode(Node):
         if slant is not None:
             v.sum_r += float(slant)
             v.n_r += 1
+        if intensity_for_mean is not None:
+            # Welford-style running mean.
+            v.intensity_mean += (float(intensity_for_mean) - v.intensity_mean) / (v.n_obs + 1)
+            v.n_obs += 1
 
     def _promoted_keys_cb(self, msg: PromotedVoxelKeys):
         """seabed_surface has promoted these voxels — retire them."""
@@ -271,6 +327,32 @@ class VoxelMapperNode(Node):
             self._promoted.add(k)
             if self._store.pop(k, None) is not None:
                 self._n_retired += 1
+
+    # ── structure-neighbour helper (for the intensity-similarity gate) ────────
+
+    def _structure_neighbour_mean_intensity(self, ix, iy, iz):
+        """Mean of ``intensity_mean`` over structure-plausible voxels in a
+        cube of side ``2*r_sim_voxels + 1`` around ``(ix, iy, iz)``.
+
+        "Structure-plausible" means the neighbour has been observed at least
+        once and was created with ``d_factor_cached >= tau_sim`` (i.e. it's
+        right at a LiDAR cluster). Returns ``None`` when fewer than
+        ``n_min_neighbors`` qualify — the caller treats that as the bootstrap
+        case and sets ``similarity = 1`` so the geometric gates alone decide.
+        """
+        store     = self._store
+        tau       = self._tau_sim
+        n_count   = 0
+        i_sum     = 0.0
+        for dx, dy, dz in self._nbr_offsets:
+            v_n = store.get(_pack(ix + dx, iy + dy, iz + dz))
+            if v_n is None or v_n.n_obs == 0 or v_n.d_factor_cached < tau:
+                continue
+            n_count += 1
+            i_sum   += v_n.intensity_mean
+        if n_count < self._n_min_nbr:
+            return None
+        return i_sum / n_count
 
     # ── column helpers ────────────────────────────────────────────────────────
 
@@ -291,36 +373,32 @@ class VoxelMapperNode(Node):
         if n == 0:
             return
 
-        x     = np.asarray(msg.x,             dtype=np.float64)
-        y     = np.asarray(msg.y,             dtype=np.float64)
-        z     = np.asarray(msg.z,             dtype=np.float64)
-        inten = np.asarray(msg.intensity,     dtype=np.float64)
-        slant = np.asarray(msg.slant_range,   dtype=np.float64)
-        v_arr = np.asarray(msg.lidar_support, dtype=np.float64)
-        label = np.asarray(msg.label,         dtype=np.uint8)
+        x       = np.asarray(msg.x,             dtype=np.float64)
+        y       = np.asarray(msg.y,             dtype=np.float64)
+        z       = np.asarray(msg.z,             dtype=np.float64)
+        inten   = np.asarray(msg.intensity,     dtype=np.float64)
+        slant   = np.asarray(msg.slant_range,   dtype=np.float64)
+        d_fac   = np.asarray(msg.d_factor,      dtype=np.float64)
+        c_fac   = np.asarray(msg.count_factor,  dtype=np.float64)
+        label   = np.asarray(msg.label,         dtype=np.uint8)
 
-        # ── Vectorised soft responsibilities (Dirichlet–Categorical) ──────────
-        # Each non-FREE return contributes ONE unit of total mass to the voxel,
-        # split between (SEABED, OBJECT, STRUCTURE) by:
-        #     r_sb  = exp(-alpha_i * u)                     (SEABED)
-        #     r_obj = (1 - r_sb) * exp(-alpha_l * v)        (OBJECT)
-        #     r_str = (1 - r_sb) * (1 - exp(-alpha_l * v))  (STRUCTURE)
-        # with u = max(I - mu_i, 0) / mu_i (intensity excess above the
-        # estimator's mean) and v = the geometric LiDAR support score.
-        # Sum = 1 by construction. Hierarchical: intensity decides "is this
-        # seabed?", LiDAR decides "if not, is it object or structure?".
+        # ── Vectorised pre-computation (the bits that don't depend on
+        # the structure-neighbour query). r_sb is the SEABED responsibility,
+        # which only depends on intensity excess u.
         mu_i = max(float(msg.mu_i), 1e-9)
         u    = np.maximum(inten - mu_i, 0.0) / mu_i
-        f_I  = 1.0 - np.exp(-self._alpha_i * u)
-        f_L  = 1.0 - np.exp(-self._alpha_l * v_arr)
-        r_sb  = 1.0 - f_I
-        r_obj = f_I * (1.0 - f_L)
-        r_str = f_I * f_L
+        r_sb = np.exp(-self._alpha_i * u)               # exp(-alpha_i * u)
+        f_L_geom = d_fac * c_fac                         # geometric STRUCTURE gate
 
-        # Per-return loop: FREE → unit mass to w_free; non-FREE → unit mass
-        # split by (r_sb, r_obj, r_str). All four classes use the same
-        # elevation-band spread (weight / N per band voxel).
-        dw_vec = np.zeros(4, dtype=np.float64)   # reused across iterations
+        # "Very bright -> OBJECT" boost: transfers part of the LiDAR-supported
+        # STRUCTURE share into OBJECT once u exceeds u_obj_thresh.
+        u_obj_exc   = np.maximum(u - self._u_obj_th, 0.0)
+        f_obj_boost = 1.0 - np.exp(-self._alpha_obj * u_obj_exc)
+
+        # Per-return loop. FREE returns are a hard branch (all mass to w_free);
+        # non-FREE returns go through the soft responsibility split with the
+        # intensity-similarity gate.
+        dw_vec = np.zeros(4, dtype=np.float64)
         for i in range(n):
             lab = int(label[i])
             ix  = int(np.floor(x[i] * self._inv_r_v))
@@ -337,21 +415,56 @@ class VoxelMapperNode(Node):
                 dw_vec[1] = 0.0
                 dw_vec[2] = 0.0
                 dw_vec[3] = 0.0
-                attach_ring = False
+                # FREE doesn't update intensity_mean (zero-intensity).
+                for izc in izs:
+                    self._apply_multi(_pack(ix, iy, int(izc)),
+                                      dw_vec,
+                                      d_factor_for_create=d_fac[i])
+                continue
+
+            # ── Non-FREE: compute the intensity-similarity gate at the centre
+            # voxel. The similarity multiplies into the STRUCTURE responsibility
+            # and the complement goes to OBJECT — total per-return mass is 1.
+            if f_L_geom[i] > F_L_SIM_GATE:
+                mu_str_local = self._structure_neighbour_mean_intensity(ix, iy, iz)
+                if mu_str_local is None or mu_str_local <= 0.0:
+                    similarity = 1.0
+                else:
+                    sigma = self._sigma_sim * mu_str_local
+                    similarity = float(np.exp(
+                        -(inten[i] - mu_str_local) ** 2 / (2.0 * sigma * sigma)
+                    ))
             else:
-                dw_vec[0] = 0.0
-                dw_vec[1] = r_sb[i]  * inv_N
-                dw_vec[2] = r_obj[i] * inv_N
-                dw_vec[3] = r_str[i] * inv_N
-                attach_ring = True
+                # Far from any LiDAR: STRUCTURE is already negligible — skip
+                # the neighbour query.
+                similarity = 1.0
+
+            f_L_eff = f_L_geom[i] * similarity            # final STRUCTURE gate
+            r_sb_i   = r_sb[i]
+            one_minus = 1.0 - r_sb_i
+            # Apply the "very bright -> OBJECT" boost by stealing a fraction
+            # f_obj_boost of the STRUCTURE mass for OBJECT. Sum still = 1.
+            fob_i    = f_obj_boost[i]
+            r_str_i  = one_minus * f_L_eff * (1.0 - fob_i)
+            r_obj_i  = one_minus * ((1.0 - f_L_eff) + f_L_eff * fob_i)
+
+            dw_vec[0] = 0.0
+            dw_vec[1] = r_sb_i  * inv_N
+            dw_vec[2] = r_obj_i * inv_N
+            dw_vec[3] = r_str_i * inv_N
 
             for izc in izs:
                 key = _pack(ix, iy, int(izc))
-                if int(izc) == iz and attach_ring:
+                if int(izc) == iz:
+                    # Centre voxel: attach ring-buffer z, slant, and the
+                    # intensity sample to update intensity_mean.
                     self._apply_multi(key, dw_vec,
-                                      z_ring=z[i], slant=slant[i])
+                                      d_factor_for_create=d_fac[i],
+                                      z_ring=z[i], slant=slant[i],
+                                      intensity_for_mean=inten[i])
                 else:
-                    self._apply_multi(key, dw_vec)
+                    self._apply_multi(key, dw_vec,
+                                      d_factor_for_create=d_fac[i])
 
         self._scan_count_ += 1
         if self._scan_count_ <= 5 or self._scan_count_ % 50 == 0:
@@ -366,37 +479,31 @@ class VoxelMapperNode(Node):
         msg.header.frame_id = self._map_frame
         msg.header.stamp = self.get_clock().now().to_msg()
 
-        items = list(self._store.items())
-        keys, cx, cy, cz = [], [], [], []
-        wf, ws, wo, wt, W, sl = [], [], [], [], [], []
-        ring_count, ring_flat = [], []
-        for k, v in items:
-            ix, iy, iz = _unpack_one(k)
-            keys.append(int(k))
-            cx.append((ix + 0.5) * self._r_v)
-            cy.append((iy + 0.5) * self._r_v)
-            cz.append((iz + 0.5) * self._r_v)
-            wf.append(float(v.w[0]))
-            ws.append(float(v.w[1]))
-            wo.append(float(v.w[2]))
-            wt.append(float(v.w[3]))
-            W.append(float(v.W))
-            sl.append(v.sum_r / v.n_r if v.n_r > 0 else 0.0)
-            ring_count.append(len(v.ring))
-            ring_flat.extend(float(d) for d in v.ring)
+        items = self._store.items()
+        n = len(self._store)
 
-        msg.voxel_key = keys
-        msg.center_x = cx
-        msg.center_y = cy
-        msg.center_z = cz
-        msg.w_free = wf
-        msg.w_sb = ws
-        msg.w_obj = wo
-        msg.w_str = wt
-        msg.weight = W
-        msg.mean_slant_range = sl
-        msg.ring_count = ring_count
-        msg.ring_depths_flat = ring_flat
+        # Pre-allocate the parallel arrays we publish — a single pass over the
+        # store fills them, avoiding the per-attribute list-comprehension passes.
+        keys = np.empty(n, dtype=np.int64)
+        wmat = np.empty((n, 4), dtype=np.float32)
+        Ws   = np.empty(n,     dtype=np.float32)
+        aps  = np.empty(n,     dtype=np.float32)
+        for i, (k, v) in enumerate(items):
+            keys[i]    = k
+            wmat[i, 0] = v.w[0]
+            wmat[i, 1] = v.w[1]
+            wmat[i, 2] = v.w[2]
+            wmat[i, 3] = v.w[3]
+            Ws[i]      = v.W
+            aps[i]     = v.alpha_str_prior
+
+        msg.voxel_key       = keys.tolist()         # int64[] expects a python list
+        msg.w_free          = wmat[:, 0].tolist()
+        msg.w_sb            = wmat[:, 1].tolist()
+        msg.w_obj           = wmat[:, 2].tolist()
+        msg.w_str           = wmat[:, 3].tolist()
+        msg.weight          = Ws.tolist()
+        msg.alpha_str_prior = aps.tolist()
         self._map_pub.publish(msg)
 
     # ── active voxel cloud (visualisation) ────────────────────────────────────
@@ -410,8 +517,20 @@ class VoxelMapperNode(Node):
                            count=len(items))
         wmat = np.array([v.w for _, v in items], dtype=np.float64)   # (N, 4)
         Ws   = np.array([v.W for _, v in items], dtype=np.float64)   # (N,)
+        aps  = np.array([v.alpha_str_prior for _, v in items],
+                        dtype=np.float64)                            # (N,)
+        imean = np.array([v.intensity_mean for _, v in items],
+                         dtype=np.float64)                           # (N,)
 
-        pi   = (self._a0 + wmat) / (self._four_a0 + Ws)[:, None]
+        # Per-voxel LiDAR-derived STRUCTURE prior enters pi_str's numerator
+        # and once in the shared denominator:
+        #   pi_c    = (alpha_0 + w_c) / Z          for c != STRUCTURE
+        #   pi_str  = (alpha_0 + alpha_str_prior + w_str) / Z
+        #   Z       = 4*alpha_0 + alpha_str_prior + W
+        num            = self._a0 + wmat                             # (N, 4)
+        num[:, STRUCTURE] += aps
+        denom          = self._four_a0 + aps + Ws                    # (N,)
+        pi   = num / denom[:, None]
         cmax = np.argmax(pi, axis=1)
         pmax = pi[np.arange(len(keys)), cmax]
         conf = pmax * np.tanh(Ws / self._w_ref)
@@ -421,7 +540,7 @@ class VoxelMapperNode(Node):
             return
 
         ix, iy, iz = _unpack(keys[keep])
-        out = np.empty((int(keep.sum()), 10), dtype=np.float32)
+        out = np.empty((int(keep.sum()), 11), dtype=np.float32)
         out[:, 0] = (ix.astype(np.float64) + 0.5) * self._r_v
         out[:, 1] = (iy.astype(np.float64) + 0.5) * self._r_v
         out[:, 2] = (iz.astype(np.float64) + 0.5) * self._r_v
@@ -430,6 +549,7 @@ class VoxelMapperNode(Node):
         out[:, 5] = cmax[keep].astype(np.float32)
         # pi[keep] is (N_keep, 4) in [free, sb, obj, str] order — drop straight in.
         out[:, 6:10] = pi[keep].astype(np.float32)
+        out[:, 10]   = imean[keep].astype(np.float32)
 
         header = Header()
         header.frame_id = self._map_frame

@@ -16,8 +16,12 @@ promotion sweep + feedback remain. The Patch / Kalman / smoothing code lives
 in git history if you want it back.
 
 PROMOTION-READINESS CHECK  (applied here, once per sweep)
-  Posterior class probabilities under the symmetric Dirichlet prior alpha_0:
-      pi_c = (alpha_0 + w_c) / (4*alpha_0 + W)
+  Posterior class probabilities under the symmetric Dirichlet prior alpha_0
+  plus the per-voxel LiDAR-derived STRUCTURE prior alpha_str_prior (only
+  enters pi_str's numerator and the shared denominator):
+      pi_c    = (alpha_0 + w_c) / Z              for c != STRUCTURE
+      pi_str  = (alpha_0 + alpha_str_prior + w_str) / Z
+      Z       = 4*alpha_0 + alpha_str_prior + W
   A voxel is promoted when:
       argmax_c pi_c == SEABED  AND  pi_SEABED >= pi_conf  AND  W >= w_conf
   Promotion is irreversible — a voxel is promoted at most once.
@@ -110,9 +114,16 @@ class SeabedSurfaceNode(Node):
                              np.asarray(snap.w_sb,   dtype=np.float64),
                              np.asarray(snap.w_obj,  dtype=np.float64),
                              np.asarray(snap.w_str,  dtype=np.float64)], axis=1)
+            aps  = np.asarray(snap.alpha_str_prior, dtype=np.float64)
 
-            # Vectorised promotion-readiness check.
-            pi    = (self._a0 + w4) / (self._four_a0 + W)[:, None]
+            # Vectorised promotion-readiness check. The per-voxel
+            # alpha_str_prior contribution lifts pi_str only, so SEABED
+            # promotion gets correspondingly harder near LiDAR-supported
+            # structures (which is the point).
+            num = self._a0 + w4
+            num[:, 3] += aps                                # STRUCTURE numerator
+            denom = self._four_a0 + aps + W                  # shared denominator
+            pi    = num / denom[:, None]
             dom   = np.argmax(pi, axis=1)
             pmax  = pi[np.arange(len(keys)), dom]
             ready = (dom == SEABED) & (pmax >= self._pi_conf) & (W >= self._w_conf)

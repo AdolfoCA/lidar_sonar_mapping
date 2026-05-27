@@ -1,0 +1,213 @@
+=============================================================================
+tune_me.txt — plain-English tuning guide for the Dirichlet voxel pipeline
+=============================================================================
+
+-----------------------------------------------------------------------------
+1) d_scale  (return_classifier, default 0.2 m)
+-----------------------------------------------------------------------------
+What it is:
+    Distance gate around the nearest LiDAR point.
+        d_factor = exp(-d / d_scale)
+    d = horizontal distance from the sonar return to that nearest LiDAR.
+    Small d_scale = sharp ("AT a LiDAR point only").
+    Large d_scale = loose ("near a LiDAR cluster is enough").
+
+How to react:
+  - Voxels FAR from a wall flicker red (pi_str high) in rviz
+      -> d_scale TOO LARGE. Lower it (try 0.1 m).
+  - True wall voxels never glow red even after many passes
+      -> d_scale TOO SMALL. Raise it (try 0.4 m).
+  - Rule of thumb: set d_scale ~ expected sonar-LiDAR registration error.
+
+-----------------------------------------------------------------------------
+2) alpha_count  (return_classifier, default 0.1)
+-----------------------------------------------------------------------------
+What it is:
+    Saturation rate of the LiDAR cluster-density gate.
+        count_factor = 1 - exp(-alpha_count * count)
+    count = # LiDAR points inside r_lidar (1.5 m) of the nearest LiDAR.
+    Big alpha_count = saturates fast (few points = full support).
+    Small alpha_count = saturates slowly (need a dense cluster).
+
+How to react:
+  - Real walls have sparse LiDAR clusters, count_factor stays near 0
+      -> alpha_count TOO SMALL. Raise it (try 0.3).
+  - A single stray LiDAR point triggers structure prior far from real walls
+      -> alpha_count TOO LARGE. Lower it (try 0.05).
+
+-----------------------------------------------------------------------------
+3) alpha_i  (voxel_mapper, default 8.0)
+-----------------------------------------------------------------------------
+What it is:
+    Sharpness of the intensity gate that decides SEABED vs not-SEABED.
+        u    = max(I - mu_i, 0) / mu_i
+        r_sb = exp(-alpha_i * u)
+    mu_i = the live seabed-intensity estimate.
+    Big alpha_i = bright returns immediately drop r_sb to ~0 (not SEABED).
+    Small alpha_i = even bright returns keep some SEABED responsibility.
+
+Closed-form tuning rule:
+        alpha_i = ln(2) / u_half
+    where u_half = (I_decision - mu_i) / mu_i is the intensity excess at
+    which you want r_sb = 0.5 (the "50/50 SEABED vs not-SEABED" point).
+
+Worked example (seabed band 1700-1850, anything higher is "something else"):
+    Step 1.  Check live mu_i:
+                 ros2 topic echo /seabed_mu_intensity --once
+             Typically settles near the seabed mid, e.g. mu_i ~ 1775.
+    Step 2.  Pick the intensity where you want the SB/not-SB decision,
+             e.g. I_decision = 2000 (just above the seabed upper edge).
+    Step 3.  u_half = (2000 - 1775) / 1775 = 0.127
+             alpha_i = 0.693 / 0.127 ~ 5.5
+             Go higher (alpha_i ~ 8) if you want the cut sharper -- by
+             I = 2500, r_sb drops to ~0.04 (so 96% of the mass is split
+             between OBJECT and STRUCTURE).
+
+Quick reference table (mu_i = 1775):
+        I       u         r_sb at alpha=1.5    r_sb at alpha=8
+       1850    0.042         0.94                  0.71
+       2000    0.127         0.83                  0.36
+       2500    0.408         0.54                  0.04
+       3000    0.690         0.35                  0.004
+
+How to react:
+  - Clearly bright object/structure returns are still half-SEABED
+      -> alpha_i TOO SMALL. Raise it (try 8 -> 12).
+  - Slightly-above-seabed returns are immediately torn off SEABED
+      -> alpha_i TOO LARGE. Lower it (try 8 -> 5).
+
+-----------------------------------------------------------------------------
+4) beta_struct_prior  (voxel_mapper, default 3.0)
+-----------------------------------------------------------------------------
+What it is:
+    How strong the initial "I'm near LiDAR, so I'm probably STRUCTURE"
+    pseudo-observation is, applied ONCE when the voxel is first created:
+        alpha_str_prior = beta_struct_prior * d_factor_cached
+    It enters pi_str's numerator only (and once in the shared denominator),
+    so close-to-LiDAR voxels START as STRUCTURE and decay only as evidence
+    contradicts them.
+
+How to react:
+  - Walls only show up as STRUCTURE after many passes
+      -> beta_struct_prior TOO SMALL. Raise it (try 6.0).
+  - Side voxels (behind/beside walls) briefly flash STRUCTURE in rviz
+      -> beta_struct_prior TOO LARGE. Lower it (try 1.0).
+  - Want NO prior bias (purely evidence-driven)?  Set it to 0.
+
+Rough rule: at beta=3, ~3 contradictory observations are enough to flip a
+prior-induced pi_str from ~0.9 toward SEABED.
+
+-----------------------------------------------------------------------------
+5) sigma_sim  (voxel_mapper, default 0.3)
+-----------------------------------------------------------------------------
+What it is:
+    Tolerance of the intensity-similarity gate, as a FRACTION of the local
+    structure mean intensity.
+        sigma      = sigma_sim * mu_str_local
+        similarity = exp(-(I - mu_str_local)^2 / (2 * sigma^2))
+    Where mu_str_local = mean of intensity_mean over neighbouring
+    structure-plausible voxels. Similarity multiplies into w_str only.
+    Small sigma_sim = strict (intensity must match the wall closely).
+    Large sigma_sim = loose (most bright returns count as wall-like).
+
+How to react:
+  - Side voxels with the wrong intensity still grow w_str
+      -> sigma_sim TOO LARGE. Lower it (try 0.2 or 0.15).
+  - True wall voxels lose STRUCTURE because of normal brightness variance
+      -> sigma_sim TOO SMALL. Raise it (try 0.4 or 0.5).
+
+How to set it from data:
+  1. In rviz colour /dirichlet_voxels by intensity_mean.
+  2. Read off a typical wall intensity, e.g. 3000.
+  3. Read off a typical side leak, e.g. 1500.
+  4. sigma_sim ~ 0.5 * (1 - 1500/3000) = 0.25 works as a starting point.
+
+-----------------------------------------------------------------------------
+6) tau_sim  (voxel_mapper, default 0.5)
+-----------------------------------------------------------------------------
+What it is:
+    The minimum d_factor a neighbour voxel must have been CREATED with to
+    count as a "structure-plausible" neighbour in the similarity calculation.
+    Higher tau_sim = only voxels essentially AT a LiDAR point count.
+    Lower tau_sim = a wider ring of voxels around the LiDAR cluster count.
+
+    At default d_scale=0.2:
+        tau_sim=0.5 -> only voxels with d <= 0.14 m count
+        tau_sim=0.3 -> only voxels with d <= 0.24 m count
+        tau_sim=0.7 -> only voxels with d <= 0.07 m count
+
+How to react:
+  - similarity term never engages because neighbours never qualify
+    (look at intensity_mean -- most voxels have ~0)
+      -> tau_sim TOO HIGH. Lower it (try 0.3).
+  - Similarity matches even on noisy / far-from-wall neighbours
+      -> tau_sim TOO LOW. Raise it (try 0.7).
+
+-----------------------------------------------------------------------------
+7) n_min_neighbors  (voxel_mapper, default 3)
+-----------------------------------------------------------------------------
+
+Tune it up if you want stricter "I need lots of confident wall neighbours
+before I trust similarity" behaviour; tune it down if walls are too sparse
+in your scene for the gate to ever engage.
+
+-----------------------------------------------------------------------------
+8) u_obj_thresh + alpha_obj  (voxel_mapper, defaults 0.5 + 1.5)
+-----------------------------------------------------------------------------
+What they are:
+    The "very bright -> OBJECT" boost. When a return is much brighter than
+    the seabed estimate, it is probably an object, so we transfer part of
+    the STRUCTURE share into OBJECT:
+        u           = max(I - mu_i, 0) / mu_i               intensity excess
+        u_obj_exc   = max(u - u_obj_thresh, 0)              excess above the gate
+        f_obj_boost = 1 - exp(-alpha_obj * u_obj_exc)       in [0, 1)
+        r_str       = (1 - r_sb) * f_L_eff * (1 - f_obj_boost)
+        r_obj       = (1 - r_sb) * ((1 - f_L_eff) + f_L_eff * f_obj_boost)
+
+    f_obj_boost = 0 below u_obj_thresh; nothing changes there. Above it,
+    f_obj_boost saturates to 1 at the rate set by alpha_obj.
+
+u_obj_thresh: how much brighter than seabed before the boost engages.
+    0.5  -> I must be at least 1.5 * mu_i  (default)
+    1.0  -> I must be at least 2.0 * mu_i  (stricter)
+    0.2  -> I must be at least 1.2 * mu_i  (kicks in early)
+
+alpha_obj: how quickly the boost saturates above the threshold.
+    Quick reference at u_obj_thresh = 0.5, mu_i = 1775:
+        I (and u)      u_obj_exc   f_obj_boost at alpha_obj=1.5
+        2500 (u=0.41)    0.00         0.00   (still below threshold)
+        2750 (u=0.55)    0.05         0.07
+        3000 (u=0.69)    0.19         0.25
+        3500 (u=0.97)    0.47         0.51
+        4000 (u=1.25)    0.75         0.68
+        5000 (u=1.82)    1.32         0.86
+
+How to react:
+  - Bright objects sitting near LiDAR clusters still register as STRUCTURE
+      -> u_obj_thresh too high or alpha_obj too low. Lower the threshold
+         (e.g. 0.3) or raise alpha_obj (e.g. 3.0).
+  - Walls (only modestly above seabed) are being demoted to OBJECT
+      -> u_obj_thresh too low. Raise it (e.g. 0.8).
+  - Disable the boost entirely: set alpha_obj = 0  OR  u_obj_thresh very high.
+
+-----------------------------------------------------------------------------
+Workflow
+-----------------------------------------------------------------------------
+1. First check mu_i settles to a reasonable seabed intensity:
+       ros2 topic echo /seabed_mu_intensity --once
+   If it's wrong, fix seabed_estimator BEFORE touching anything below.
+
+2. Open rviz, /dirichlet_voxels coloured by pi_str.
+   - Walls glow red, off-wall voxels dim -> d_scale + beta_struct_prior OK.
+   - Tune those two first.
+
+3. Switch rviz colouring to intensity_mean.
+   - Walls cluster around one intensity, side leaks at another -> OK.
+   - Compute mu_str_local / side ratio, set sigma_sim accordingly.
+
+4. Switch back to pi_str over time.
+   - Side voxels should fade (pi_str decays) over multiple passes.
+   - If they don't: lower sigma_sim or lower tau_sim.
+
+5. alpha_i and alpha_count are usually fine at defaults; touch them only
+   if SEABED vs not-SEABED, or sparse-LiDAR support, is clearly miscalibrated.

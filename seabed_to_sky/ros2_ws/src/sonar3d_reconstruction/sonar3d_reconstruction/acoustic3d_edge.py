@@ -36,6 +36,11 @@ class Acoustic3dEdge(Node):
             namespace="",
             parameters=[
                 ("sonar.topic", Parameter.Type.STRING),
+                # QoS reliability for the sonar subscription. "best_effort" is
+                # the universal choice (binds to publishers of either policy);
+                # "reliable" rejects BEST_EFFORT publishers. Defaults to
+                # best_effort so the default config works with any bag.
+                ("sonar.qos_reliability", "best_effort"),
                 ("sonar.threshold", Parameter.Type.DOUBLE),
                 ("sonar.min_range", Parameter.Type.DOUBLE),
                 ("sonar.max_range", Parameter.Type.DOUBLE),
@@ -70,11 +75,23 @@ class Acoustic3dEdge(Node):
         )
 
         # Create subscriber and publisher.
-        # The sonar source (driver / rosbag) publishes RELIABLE — a BEST_EFFORT
-        # subscriber is QoS-incompatible with a RELIABLE publisher and the link
-        # silently fails to (re)connect, which stops the leading-edge output.
-        # Match RELIABLE here so the subscription stays connected.
-        _sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        # Resolve the requested reliability policy from the YAML.
+        _rel_str = str(self.get_parameter("sonar.qos_reliability").value).lower()
+        if _rel_str == "reliable":
+            _rel_policy = ReliabilityPolicy.RELIABLE
+        elif _rel_str == "best_effort":
+            _rel_policy = ReliabilityPolicy.BEST_EFFORT
+        else:
+            self.get_logger().warn(
+                f"sonar.qos_reliability='{_rel_str}' is not 'reliable' or "
+                f"'best_effort'; falling back to best_effort."
+            )
+            _rel_policy = ReliabilityPolicy.BEST_EFFORT
+        _sensor_qos = QoSProfile(depth=10, reliability=_rel_policy)
+        self.get_logger().info(
+            f"sonar QoS: reliability={_rel_policy.name}, depth=10 "
+            f"(set sonar.qos_reliability in the config to change)"
+        )
         self.sub = Subscriber(
             self, ProjectedSonarImage, self.get_parameter("sonar.topic").value, qos_profile=_sensor_qos
         )
