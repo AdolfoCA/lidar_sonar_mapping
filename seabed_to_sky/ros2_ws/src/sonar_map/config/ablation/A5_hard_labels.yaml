@@ -1,0 +1,17 @@
+# A5 — TOWARD HARD LABELS  (defends Claim 2: soft accumulation helps).
+# There is no config switch for true hard labels (voxel_mapper always computes
+# the soft split), so this is the closest config-only PROXY: sharpen every gate
+# so each return's mass collapses toward a single class.
+#   alpha_i large  -> g_obj saturates fast (object vs seabed becomes near-binary)
+#   w_str small    -> m_str is a narrow spike (structure band near-binary)
+#   sigma_sim small-> similarity is a narrow spike (near-binary)
+# Expect: noisier, less confident map; the semantic-evolution curves jump
+# instead of converging smoothly — illustrating why soft accumulation is better.
+#
+# For a TRUE hard-label baseline (one-hot mass to argmax class per return),
+# ask me to add a `hard_labels` boolean to voxel_mapper — a few lines.
+voxel_mapper:
+  ros__parameters:
+    alpha_i:    50.0
+    w_str:      0.02
+    sigma_sim:  0.02

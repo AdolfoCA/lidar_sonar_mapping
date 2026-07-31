@@ -1,0 +1,8 @@
+# A0 — FULL BASELINE (the complete method).
+# Overlay is intentionally empty: run with the base dirichlet_voxel.yaml as-is.
+# Every other ablation row is compared against this run.
+#
+# (If you want a meaningful structure-prior ablation in A4, raise
+#  voxel_mapper.beta_struct_prior here, e.g. to 3.0, and keep A4 at 0.0.)
+voxel_mapper:
+  ros__parameters: {}

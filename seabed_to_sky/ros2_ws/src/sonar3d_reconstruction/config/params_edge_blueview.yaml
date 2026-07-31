@@ -8,9 +8,16 @@ acoustic3d_edge_horizontal:
       #   "reliable"    — only binds to RELIABLE publishers; rejects BEST_EFFORT bags
       # Change this to "reliable" only if you have a specific reason; "best_effort" works for every bag we've seen.
       qos_reliability: "best_effort"
-      threshold: 1000. # uint16 absolute residual after background subtraction. Lower = more points / easier objects. Re-tune from the /blueview/point2/leading distribution after the uint16 switch.
+      threshold: 3500. # uint16 absolute residual after background subtraction. Lower = more points / easier objects. Re-tune from the /blueview/point2/leading distribution after the uint16 switch.
       min_range: 2.0  # bumped from 3.0 — near-range beam-pattern artefact dominates below this. Tune upward as needed.
       max_range: 20.0
+      # Beam (bearing/azimuth) window in DEGREES — the range of beams to KEEP.
+      # Crops edge-of-FOV beam columns (e.g. the left-edge artefact) before
+      # leading-edge detection, analogous to min_range/max_range on the range
+      # axis. Default -90/90 keeps every beam (no-op); tune inward (e.g. -45/45)
+      # to drop the outer beams that produce spurious leading edges.
+      min_beam: -90.0  # [deg] keep beams with bearing >= this
+      max_beam: 90.0   # [deg] keep beams with bearing <= this
       sound_speed: 1500.
       sound_speed_actual: 1482.42
       pitch: 0.0  # SET TO ZERO IF YOU ARE USING THE TF_STATIC.
@@ -34,5 +41,5 @@ acoustic3d_edge_horizontal:
       frame_id: "blueview_sonar"
       flipped: True 
       publish_rate: 9.0
-      visualize: False   # write horizontal_image.png (B-scan + leading-edge overlay) per frame
+      visualize: false   # write horizontal_image.png (B-scan + leading-edge overlay) per frame
       folder: "/home/rosdev/ros2_ws/src/images/blueview"

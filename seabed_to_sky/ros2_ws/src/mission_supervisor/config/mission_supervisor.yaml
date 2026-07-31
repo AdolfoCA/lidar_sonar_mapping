@@ -1,0 +1,36 @@
+mission_supervisor:
+  ros__parameters:
+    mission_dir: "/home/rosdev/ros2_ws/mission"
+    enable_actions: true          # false = read-only monitor (publishes latency, never prunes)
+    plot_on_exit: false           # on Ctrl-C, auto-render mission/plots/*.png (best-effort)
+    eval_period_s: 1.0            # how often the latency is evaluated (s)
+
+    # ---- ODOMETRY-LATENCY trigger ----
+    # We watch the per-scan odometry COMPUTE time published by spark_fast_lio on
+    # /odometry_latency_ms (it grows as the LiDAR map grows). At the start the
+    # system is healthy, so over baseline_window_s we learn a BASELINE latency.
+    # When the smoothed latency stays >= baseline x (1 + latency_exceed_percent/100)
+    # for latency_consecutive checks AND latency_cooldown_s has elapsed, we prune:
+    #   /prune_kdtree (lidar: save full map + delete furthest fraction) +
+    #   /sonar_map/save_and_reset (sonar: save + clear).
+    # One 'prune' row per trigger -> a single line (with position) in every plot.
+    odom_latency_topic: "/odometry_latency_ms"
+    latency_exceed_percent: 100.0  # KNOB 1: fire when latency is this % over the healthy baseline
+    baseline_window_s:     300.0   # healthy-start window used to learn the baseline latency
+    baseline_min_samples:  30     # need at least this many samples before locking the baseline
+    latency_smooth_n:      20     # median-smoothing window (rejects single-scan spikes)
+    latency_consecutive:   5      # require this many consecutive over-threshold checks (debounce)
+    latency_cooldown_s:    30.0   # min seconds between prunes (let latency settle after freeing)
+
+    # ---- LiDAR prune fraction (KNOB 2) ----
+    # Fraction (0..1) of the FURTHEST lidar points (by distance from the vessel) to
+    # delete on each prune. Pushed to the spark_fast_lio node's `prune.fraction`.
+    # The lidar node floors the keep radius at cube_len/2, so however large this is
+    # the FAST-LIO registration map (and the odometry) is never starved.
+    lidar_prune_fraction: 0.5     # KNOB 2: delete the furthest 50% of the lidar map
+    lidar_node_name: "lio_mapping"  # spark_fast_lio node name (target of the param push)
+
+    # ---- services fired together on the trigger ----
+    lidar_prune_service: "/prune_kdtree"              # spark-fast-lio: save full map + percentile prune
+    sonar_reset_service: "/sonar_map/save_and_reset"  # sonar_map: save + clear
+    odom_topic: "/odometry"                           # for the position printed at each prune

@@ -16,6 +16,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -78,6 +79,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
   void pclPointIMUToBase(PointType const *const pi, PointType *const po);
 
   void collectRemovedPoints();
+  void flushRemovedBuffer();   // save accumulated trimmed points -> mission/lidar/lidar_trimmed_*.pcd
 
   void standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg);
   // adding function to save the kd tree 
@@ -88,7 +90,19 @@ class SPARKFastLIO2 : public rclcpp::Node {
   void exportKDTreeCallback(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-    
+
+  // Long-mission RAM relief: /prune_kdtree only SETS prune_requested_ (cheap,
+  // any thread). The actual prune runs in the main() timer thread via
+  // pruneFarBoxes() so it never races Add_Points/Delete_Point_Boxes. It keeps a
+  // cube of prune_keep_radius_ around the current pose, saves the far part to
+  // disk, then Delete_Point_Boxes() the far region. The EKF/IMU state is never
+  // touched, so IMU init is preserved.
+  void pruneKDTreeCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void pruneFarBoxes();
+
+
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
   void livoxLiDARCallback(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg);
@@ -109,10 +123,17 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   void publishPath(const state_ikfom &state);
 
-  void publishFrameWorld(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud);
+  // perf-measurement: optional pub_stamp lets the scan-rate caller stamp the
+  // output with the LiDAR scan time (== input /ouster/points header stamp) so
+  // an external latency sniffer can match output to input by header.stamp.
+  // When omitted (default-constructed Time, sec==0 && nsec==0) we fall back to
+  // this->now() as before — no behavioural change for any other caller.
+  void publishFrameWorld(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
+                         const rclcpp::Time &pub_stamp = rclcpp::Time(0, 0, RCL_ROS_TIME));
 
   void publishFrame(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
-                    const std::string &frame);
+                    const std::string &frame,
+                    const rclcpp::Time &pub_stamp = rclcpp::Time(0, 0, RCL_ROS_TIME));
 
   PoseStruct transformPoseWrtLidarFrame(const state_ikfom &state) const;
 
@@ -181,10 +202,12 @@ class SPARKFastLIO2 : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_full_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_throttle_;  // /cloud_registered_throttle (rate-limited copy for RViz)
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_lidar_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_body_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_base_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pub_odom_latency_;  // per-scan compute time [ms]
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_map_viz_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_usv_marker_;
@@ -195,6 +218,19 @@ class SPARKFastLIO2 : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_debug_voxel_;       // feats_down_body_ (after VoxelGrid)
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr export_kdtree_service_;
+
+  // Long-mission map prune (latency-triggered far-region delete + save).
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr prune_kdtree_service_;
+  std::atomic<bool> prune_requested_{false};   // set by service, consumed in main()
+  double prune_keep_radius_ = 200.0;           // m; hard floor is cube_len (odometry safety)
+  double prune_fraction_    = 0.5;             // delete the furthest this fraction of points by distance
+  std::string prune_save_dir_;                 // where the removed far part is saved
+  // Full-map preservation: accumulate every point FAST-LIO TRIMS (the per-scan
+  // ±cube_len/2 lasermapFovSegment cull AND our prune) and flush them to disk
+  // BEFORE they are lost, so the complete map is recoverable from mission/lidar/.
+  PointVector removed_buffer_;
+  size_t removed_flush_points_ = 1000000;      // flush the trimmed buffer past this many points
+  bool   save_removed_en_      = true;         // save trimmed points -> mission/lidar/lidar_trimmed_*.pcd
 
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -250,6 +286,14 @@ class SPARKFastLIO2 : public rclcpp::Node {
   bool scan_lidar_pub_en_ = false;
   bool scan_body_pub_en_  = false;
   bool scan_base_pub_en_  = false;
+  // Debug / visualization topics — gated, default OFF (CPU savers).
+  bool map_viz_en_        = false;   // map_visualization (flattens whole ikd-tree / 5s)
+  // Rate-limited copy of /cloud_registered for lightweight RViz visualization.
+  bool   cloud_throttle_en_     = false; // publish /cloud_registered_throttle
+  double cloud_throttle_period_ = 1.0;   // [s] min interval between throttled republishes (1/rate)
+  double last_throttle_pub_t_   = -1.0;  // [s] stamp of last throttled publish; <0 = none yet
+  bool usv_marker_en_     = false;   // usv_marker MarkerArray (/1s)
+  bool debug_clouds_en_   = false;   // debug/cloud_raw|subsampled|voxel (per scan)
 
   bool  dynamic_filter_en_        = false;
   float dynamic_filter_radius_sq_ = 2.25f;  // 1.5 m radius squared

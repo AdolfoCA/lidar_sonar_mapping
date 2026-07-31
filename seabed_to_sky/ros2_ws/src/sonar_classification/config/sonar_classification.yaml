@@ -1,0 +1,223 @@
+# =============================================================================
+# sonar_classification.yaml — node wiring and the CLASS-INDEPENDENT knobs.
+#
+# NO CLASS PARAMETER LIVES HERE. Everything that defines what a class IS —
+# heights, levels, presence rates, shapes — is in classes.yaml, together with
+# the sensor/water/site constants the two nodes share (tilt, aperture,
+# beamwidth, absorption, C, eps_xy, k_min). This file only says which topics to
+# read, how big a voxel is, and what to log.
+#
+# Pipeline:
+#   <leading-edge cloud, odom frame>  ->  measurement_node  ->  semantic_returns
+#                                     ->  classification_node -> semantic_voxels
+#
+# Each tunable notes what INCREASING it does.
+# =============================================================================
+
+# ── Stages 2-3: assemble the measurement tuple y_i = (p_i, I_i, l_i, m_i) ────
+measurement_node:
+  ros__parameters:
+    input_topic:  "sonar_scan"          # leading-edge returns, MAP frame, with
+                                        #   raw counts as `intensity` (+ the
+                                        #   region descriptor channels)
+    lidar_topic:  "/cloud_registered"   # registered surface-LiDAR cloud P_L
+    odom_topic:   "odometry"            # vehicle pose: slant range + waterline
+    output_topic: "semantic_returns"
+
+    classes_file: ""   # '' = the installed share/sonar_classification/config/
+                       #      classes.yaml. Point it at a copy to A/B a
+                       #      different inventory without touching the default.
+                       #
+                       # LIVE-EDIT TIP. While tuning classes you will edit
+                       # classes.yaml constantly, and the installed copy is a
+                       # COPY — so every edit needs a colcon build. Point this at
+                       # the SOURCE file instead and edits take effect on the next
+                       # node restart, no rebuild:
+                       #
+                       #   classes_file: "/home/rosdev/ros2_ws/src/sonar_classification/config/classes.yaml"
+                       #
+                       # Set it in BOTH nodes (they must agree — see below).
+                       # An absolute path is not portable, so it is left empty by
+                       # default; switch it on for a tuning session and back off
+                       # when you are done.
+                       #
+                       # (Why not --symlink-install? It symlinks the config, but
+                       # setuptools' develop mode then writes an egg-link with no
+                       # easy-install.pth, so the console-script wrappers cannot
+                       # find the package metadata and every node dies with
+                       # PackageNotFoundError. Copy-install is the working
+                       # configuration; this parameter is the way to get live
+                       # class edits without it.)
+
+    # -- Local bed fit behind h_i = z_i - z_bed_hat (eq 18) -------------------
+    # A per-XY-cell EMA of a LOW z-quantile of each sweep. Only the low quantile
+    # enters, so returns from walls and vegetation (which are ABOVE the bed)
+    # sit in the discarded upper tail and barely move the reference. tau_c for
+    # bed-anchored classes exists precisely to absorb what error remains.
+    bed_cell_size: 0.5    # [m] ↑ coarser, smoother reference; blurs real slopes
+    bed_quantile:  0.25   # [-] ↑ toward the median: raised returns pull the bed up
+    bed_forget:    0.10   # [-] ↑ adapts to new bathymetry faster, but noisier
+
+    # -- LiDAR coverage mask o_i ----------------------------------------------
+    # "Not observed" is NOT "observed empty". Where the LiDAR never looked, the
+    # whole support factor must become 1 for every class — otherwise correlated
+    # coverage gaps (a stretch of missing deck) stack many mild misses into a
+    # false veto against exactly the structure you are trying to map.
+    coverage_mode:   "radius"  # radius: a column counts as observed when LiDAR
+                               #   points exist within coverage_radius of its XY
+                               #   (the scanner demonstrably swept there).
+                               # always: every column counts as observed once any
+                               #   cloud has arrived — only honest if you know
+                               #   coverage is complete.
+    coverage_radius: 3.0       # [m] ↑ more columns count as observed, so the
+                               #   channel speaks more often and abstains less.
+                               #   The better this mask, the closer to 1 you can
+                               #   HONESTLY push pi for the piercing classes.
+
+    waterline_offset: 0.0      # [m] z_waterline = odom z + this. The vehicle
+                               #   floats on the waterline, so its own pose
+                               #   fixes it up to a rigid mounting offset —
+                               #   NEGATIVE when the pose origin sits above the
+                               #   water (e.g. -1.2 for a LiDAR 1.2 m up).
+                               #   Clearance is referenced here, never to the
+                               #   return: referencing the return would make
+                               #   this channel a function of the return's own
+                               #   height and break the factorisation.
+
+    # -- Tilt cross-check (warn only) -----------------------------------------
+    # global.sonar_tilt_deg in classes.yaml and the static TF describe the SAME
+    # mounting angle. Nothing here rotates the cloud — returns arrive already
+    # georeferenced, and theta is used only as the height sensitivity
+    # s_i = r_i cos(theta) that scales the elevation blur — so the two can
+    # never double-apply. They CAN drift apart silently, though, which would
+    # compute the blur with the wrong sensitivity. This looks up the mounting
+    # transform once and warns if they disagree. It never overrides the config:
+    # theta is a declared constant, not something to infer from TF timing.
+    # -- Range-axis corrections, applied to ALREADY-RECORDED data -------------
+    # Both fix errors in what the published slant range MEANS. Neither needs the
+    # driver changed or the data re-collected: they act on the point positions
+    # in the map frame, so a bag replays correctly.
+    sonar_frame: "blueview_sonar"
+                               # Measure the slant range from the SONAR's own
+                               #   position, looked up in TF — not from the
+                               #   odometry pose, which is the vehicle/IMU frame
+                               #   0.22 m forward and 0.42 m above the head. The
+                               #   sonar's range axis is referenced to the
+                               #   acoustic origin ("the range FROM THE SONAR
+                               #   HEAD", bvt_magimage.h:172), so the odometry
+                               #   pose biases every range by a
+                               #   geometry-dependent amount (+0.17 m for a
+                               #   steep 3 m return, +0.04 m at 7 m).
+                               #   "" = fall back to the odometry pose.
+    range_offset: 0.0          # [m] SUBTRACTED from every return's range, by
+                               #   moving the point along its OWN beam toward the
+                               #   sonar. Positive = the published range is too
+                               #   LARGE by this much.
+                               #
+                               #   WHY IT EXISTS: the driver labels rows
+                               #   arithmetically, ranges[i] = start + i*inc
+                               #   (cache_manager.cpp:56-60), but the SDK's
+                               #   R-Theta grid does not start at the requested
+                               #   start range. Every range is off by the same
+                               #   CONSTANT (the bin spacing itself is right, to
+                               #   6 s.f.). A constant range error fans out along
+                               #   the beams, so it is NOT a rigid translation
+                               #   and a TF cannot absorb it — hence this.
+                               #
+                               #   >>> 0.0 UNTIL YOU MEASURE IT. <<<
+                               #   The 0.208 m in the SDK report came from the
+                               #   VENDOR'S SAMPLE FILE at a 6 m stop range, not
+                               #   from your rig. The offset plausibly tracks the
+                               #   pulse length, which BlueView varies with the
+                               #   range setting, so yours will differ.
+                               #   To measure it: put a target at a known range
+                               #   and compare, or drive past a flat wall and
+                               #   find the offset that makes the reconstructed
+                               #   wall planar (a wrong offset bows it, because
+                               #   the displacement is radial).
+                               #   Note it is partly degenerate with the TVG
+                               #   slope w, so if you only care about intensity,
+                               #   re-fitting w already absorbs most of it — but
+                               #   the POSITION error it causes does not go away.
+
+    tilt_check_parent:        "os_imu"          # "" disables the check
+    tilt_check_child:         "blueview_sonar"
+    tilt_check_tolerance_deg: 2.0               # ↑ tolerate more disagreement
+
+    shape_source: "derived"    # derived: compute (e_R, w_R) from the extractor's
+                               #   legacy channels (region_size, region_logarea)
+                               #   — works with today's clouds. See
+                               #   region_descriptor for the exact geometry and
+                               #   the one approximation it makes.
+                               # native: read region_extent / region_thickness
+                               #   straight off the cloud. Switch to this once
+                               #   the extractor publishes the two lengths.
+
+# ── Stages 4-6: score, accumulate, commit ────────────────────────────────────
+classification_node:
+  ros__parameters:
+    input_topic:  "semantic_returns"
+    voxel_topic:  "semantic_voxels"
+    census_topic: "class_census"
+    map_frame:    "odom"
+
+    classes_file: ""   # keep in sync with measurement_node (both read the same
+                       #   globals; a mismatch silently changes the geometry
+                       #   used to build the measurements vs. score them).
+                       #   If you point measurement_node at the source file for
+                       #   live editing, point this one there TOO.
+
+    voxel_size: 0.05   # [m] ↑ coarser map: fewer voxels, less CPU/RAM, but the
+                       #     spatial prediction couples over larger blocks
+    alpha_0:    0.01   # [-] symmetric Dirichlet concentration. ↑ makes the prior
+                       #     harder to overrule; << 1 lets a handful of returns
+                       #     dominate it, which is what you want for a map that
+                       #     has to converge quickly.
+
+    # -- Spatial prediction pi_c(N_v) (eq 16) --------------------------------
+    # An evidence-weighted average of the neighbourhood's beliefs, read from the
+    # PREVIOUS sweep's frozen snapshot so the result never depends on the order
+    # returns are processed in. Its job is to resolve exactly the returns the
+    # likelihoods abstain on — a low return equally consistent with the bed and
+    # with the base of a bed-anchored class — while leaving decisive returns
+    # essentially unchanged.
+    eps: 0.5   # [m] ↑ couples over a wider neighbourhood (smoother map, more
+               #     CPU: the ball query is per distinct voxel per sweep).
+               #     0 DISABLES it: pi becomes uniform, the responsibility
+               #     reduces to the normalised likelihood, and the whole sweep
+               #     runs on a vectorised fast path with no snapshot at all.
+
+    # -- Display only. None of this feeds back into the posterior. ------------
+    publish_rate:  2.0   # [Hz] ↑ republish the voxel cloud more often
+    w_ref:         5.0   # [-]  displayed confidence = max_c theta_hat * tanh(M/w_ref);
+                         #      ↑ demand more evidence before a voxel looks confident
+    w_display_min: 1.0   # [-]  ↑ raise the display floor on M (hides sparse voxels)
+    log_every:     50    # [sweeps] ↑ log the per-factor readout less often
+
+    # -- DEBUG: per-class voxel census ---------------------------------------
+    # Every census_period_sec seconds, count how many voxels each class owns
+    # and append a row to a CSV — one column per class, so the whole run plots
+    # as one curve per class on one figure:
+    #
+    #   ros2 run sonar_classification plot_class_census ~/ros2_ws/class_census.csv
+    #
+    # The same counts also go out live on `census_topic`. The CSV additionally
+    # records the accumulated soft evidence per class (mass_<class>), which
+    # moves earlier than the counts: a flat count curve WITH a rising mass curve
+    # means "detected but always losing the argmax", not "not detected".
+    # THE PLOT IS A SEPARATE STEP. This writes the CSV; nothing draws it for
+    # you. After (or during) a run:
+    #   ros2 run sonar_classification plot_class_census ~/ros2_ws/class_census.csv
+    debug_census:         false  # MASTER SWITCH. Every parameter in this file is
+                                 #   the single source of truth: the launch file
+                                 #   declares no arguments and overrides nothing.
+    census_period_sec:   10.0    # [s] the "every n seconds". ↑ coarser curve,
+                                 #   less I/O; the count is a full pass over the
+                                 #   store, so keep it well above the sweep rate
+    census_csv_path:     "~/ros2_ws/class_census.csv"   # TRUNCATED at start —
+                                 #   one file per run, never appended across runs
+    census_min_evidence: 1.0     # [-] voxels with M_v below this are not counted.
+                                 #   ↑ stricter: only well-observed voxels enter
+                                 #   the curve, so a single grazing return cannot
+                                 #   register as a confidently labelled voxel.
+                                 #   0 counts every touched voxel.

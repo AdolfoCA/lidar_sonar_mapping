@@ -23,8 +23,11 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'sonar_viewer = sonar3d_reconstruction.sonar_viewer:main',
             'acoustic3d_patch = sonar3d_reconstruction.acoustic3d_patch:main',
             'acoustic3d_edge = sonar3d_reconstruction.acoustic3d_edge:main',
+            'leading_edge_node = sonar3d_reconstruction.leading_edge_node:main',
+            'sonar_inspect = sonar3d_reconstruction.sonar_inspect:main',
             'leading_edge_visualizer = sonar3d_reconstruction.leading_edge_visualizer:main',
             'leading_edge_pc_saver = sonar3d_reconstruction.leading_edge_pc_saver:main',
         ],

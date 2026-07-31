@@ -1,0 +1,6 @@
+# A6 (sweep, 2 of 3) — VOXEL SIZE 0.20 m  (== current baseline).
+# The middle of the resolution-vs-accumulation trade-off. Included explicitly so
+# the sweep has three points; identical to A0 if the base config keeps r_v=0.20.
+voxel_mapper:
+  ros__parameters:
+    r_v: 0.20

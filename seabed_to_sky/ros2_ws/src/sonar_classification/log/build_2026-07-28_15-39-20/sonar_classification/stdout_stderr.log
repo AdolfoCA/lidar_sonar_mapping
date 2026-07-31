@@ -1,0 +1,101 @@
+running egg_info
+creating build/sonar_classification/sonar_classification.egg-info
+writing build/sonar_classification/sonar_classification.egg-info/PKG-INFO
+writing dependency_links to build/sonar_classification/sonar_classification.egg-info/dependency_links.txt
+writing entry points to build/sonar_classification/sonar_classification.egg-info/entry_points.txt
+writing requirements to build/sonar_classification/sonar_classification.egg-info/requires.txt
+writing top-level names to build/sonar_classification/sonar_classification.egg-info/top_level.txt
+writing manifest file 'build/sonar_classification/sonar_classification.egg-info/SOURCES.txt'
+reading manifest file 'build/sonar_classification/sonar_classification.egg-info/SOURCES.txt'
+writing manifest file 'build/sonar_classification/sonar_classification.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build
+creating /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib
+creating /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/sample_class.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/db_image_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/measurement_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/classification_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/__init__.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+copying sonar_classification/plot_class_census.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification
+creating /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/soft_interval.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/likelihood.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/census.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/classes.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/region_descriptor.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/voxel_map.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/factor_shape.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/db_render.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/factor_amplitude.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/bottom_grid.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/__init__.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/geometry.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/factor_position.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+copying sonar_classification/argus/factor_lidar.py -> /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus
+running install
+running install_lib
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/sample_class.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/db_image_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/measurement_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/classification_node.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/__init__.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/soft_interval.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/likelihood.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/census.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/classes.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/region_descriptor.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/voxel_map.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/factor_shape.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/db_render.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/factor_amplitude.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/bottom_grid.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/__init__.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/geometry.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/factor_position.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/argus/factor_lidar.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus
+copying /home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/build/lib/sonar_classification/plot_class_census.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/sample_class.py to sample_class.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/db_image_node.py to db_image_node.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/measurement_node.py to measurement_node.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/classification_node.py to classification_node.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/soft_interval.py to soft_interval.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/likelihood.py to likelihood.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/census.py to census.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/classes.py to classes.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/region_descriptor.py to region_descriptor.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/voxel_map.py to voxel_map.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/factor_shape.py to factor_shape.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/db_render.py to db_render.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/factor_amplitude.py to factor_amplitude.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/bottom_grid.py to bottom_grid.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/geometry.py to geometry.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/factor_position.py to factor_position.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/argus/factor_lidar.py to factor_lidar.cpython-310.pyc
+byte-compiling /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification/plot_class_census.py to plot_class_census.cpython-310.pyc
+running install_data
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/ament_index
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/ament_index/resource_index
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/ament_index/resource_index/packages
+copying resource/sonar_classification -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/ament_index/resource_index/packages
+copying package.xml -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification
+copying README.md -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification/launch
+copying launch/sonar_classification.launch.py -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification/launch
+creating /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification/config
+copying config/classes.yaml -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification/config
+copying config/sonar_classification.yaml -> /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/share/sonar_classification/config
+running install_egg_info
+Copying build/sonar_classification/sonar_classification.egg-info to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/python3.10/site-packages/sonar_classification-0.1.0-py3.10.egg-info
+running install_scripts
+Installing classification_node script to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/sonar_classification
+Installing db_image_node script to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/sonar_classification
+Installing measurement_node script to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/sonar_classification
+Installing plot_class_census script to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/sonar_classification
+Installing sample_class script to /home/rosdev/ros2_ws/src/sonar_classification/install/sonar_classification/lib/sonar_classification
+writing list of installed files to '/home/rosdev/ros2_ws/src/sonar_classification/build/sonar_classification/install.log'

@@ -14,10 +14,12 @@ sonar_scan_ned:
   ros__parameters:
     odom_frame:        "odom"
     sonar_frame:       "blueview_sonar"
-    sonar_cloud_topic: "/blueview/point2/leading"
+    sonar_cloud_topic: "/blueview/leading_edge"
     output_topic:      "sonar_scan"
     tf_timeout:        10.0
-    scan_publish_rate: 10.0
+    scan_publish_rate: 25.0   # cap (Hz) for the per-scan republish throttle. Set ABOVE the
+                              #   leading-edge rate (20 Hz) so every scan passes -> /sonar_scan
+                              #   runs at the full 20 Hz. The actual output rate = input rate.
     latency_compensation_ms: 0.0  # increase if structures appear shifted in direction of travel
 
 sonar_map_ned:
@@ -25,5 +27,12 @@ sonar_map_ned:
     input_topic:    "sonar_scan"
     output_topic:   "sonar_map"
     map_frame:      "odom"
-    max_points:     10000000
+    max_points:     90000000   # now a cap on the number of distinct voxels kept
     publish_rate:   1.0
+    voxel_size:     0.3        # [m] edge length of each cubic occupancy voxel
+
+save_map:
+  ros__parameters:
+    # Auto save+reset when the live sonar map reaches this many points.
+    # Set to 0 to disable automatic resets (manual /save_and_reset only).
+    auto_reset_points: 10000

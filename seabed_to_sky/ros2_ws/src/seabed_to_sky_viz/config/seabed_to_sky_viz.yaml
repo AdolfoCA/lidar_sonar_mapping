@@ -1,0 +1,34 @@
+seabed_to_sky_viz:
+  ros__parameters:
+    # Where the mission saved its per-prune chunks.
+    lidar_dir: "/home/rosdev/ros2_ws/mission/lidar"
+    sonar_dir: "/home/rosdev/ros2_ws/mission/sonar"
+
+    # Display frame stamped on every cloud. With the mission stopped there is no live
+    # TF, so set the Foxglove 3D panel's Fixed frame to this same name.
+    frame_id: "camera_init"
+
+    # Per-chunk downsample for lighter viewing (metres). 0 = full resolution.
+    voxel_size: 0.1
+
+    # Also publish each chunk on its own topic (<ns>/lidar/cNN_*, <ns>/sonar/cNN_*)
+    # so you can toggle them in Foxglove and decide what to exclude. false = only the
+    # aggregated topics.
+    publish_chunks: true
+
+    namespace: "/seabed_to_sky"        # prefix for the per-chunk + *_all topics
+    fused_topic: "/seabed_to_sky_map"  # the combined lidar+sonar map
+
+    # Chunks to LEAVE OUT of the fused map and the *_all topics: any chunk file whose
+    # name contains one of these substrings (timestamps work well). The chunk still
+    # gets its own per-chunk topic. Live-tunable:
+    #   ros2 param set /seabed_to_sky_viz exclude "['183549','183750']"
+    # (Defaults below are the bad revisit/no-loop-closure lidar chunks from 2026-06-23.)
+    exclude:
+      - "183147"
+      - "183248"
+      - "183349"
+      - "183449"
+      - "183549"
+      - "183750"
+      - "183852"

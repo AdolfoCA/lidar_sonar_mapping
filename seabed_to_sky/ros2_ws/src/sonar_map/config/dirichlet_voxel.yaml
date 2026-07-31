@@ -1,182 +1,235 @@
 # =============================================================================
-# dirichlet_voxel.yaml
-# Configuration for the Dirichlet-Categorical voxel mapping pipeline.
-# Used by: dirichlet_voxel.launch.py
+# dirichlet_voxel.yaml — config for the eq-24 FIXED-CLASS Dirichlet pipeline.
+# Pipeline: sonar_scan_ned -> seabed_estimator -> return_classifier ->
+#           voxel_mapper -> seabed_surface  (+ debug observers).
+# Frame: odom (ENU, z up).
 #
-# Every threshold, multiplier, resolution, gain and rate referenced by the
-# pipeline lives in this file — nothing is hard-coded in the nodes.
-#
-# Nodes configured here (in data-flow order):
-#   0. sonar_scan_ned     — transforms raw sonar returns into the odom frame
-#   1. seabed_estimator   — dual scalar Kalman filter (seabed depth + intensity)
-#   2. return_classifier  — labels returns FREE / SEABED / OBJECT / STRUCTURE
-#   3. voxel_mapper       — Dirichlet voxel map + promotion protocol
-#   4. seabed_surface     — promotion sweep + feedback (patches / mesh stripped for performance)
-#
-# Frame: odom (ENU, z up). Depth is positive-downward from the z = 0 datum.
+# The per-return class-conditional likelihood is the paper's eq-24
+# factorization, evaluated in voxel_mapper over a PREDEFINED class inventory
+# plus the trailing catch-all "other":
+#     L_{i,c} = p(p_i|c) · p(I_i|p_i,c) · p(ℓ_i|c) · p(m_i|c)
+#       position  (eq 31)   intensity (eq 34)   lidar (eq 37)   shape (eq 42)
+# ALL class-conditional parameters (Table I: ν/ω, μ/σ, π/κ/γ, ρ + the shape
+# Gaussians) live in classes.yaml — NOT here. This file only carries node
+# wiring and the CLASS-INDEPENDENT knobs: alpha_0 (α), the spatial-prior
+# radius eps (ε, eq 23), the overhead-column radius eps_xy (ε_xy, eq 35), the
+# rolling bottom reference ẑ_bed (eq 25) and display parameters. Each tunable
+# notes what INCREASING it does (↑).
+# eps_L / eps_Lz are LEGACY (pre-eq-24 nearest-LiDAR support): eq 24 does not
+# consume them, but the debug observers and the lidar_dist/lidar_count
+# telemetry channels still do — keep them equal across the nodes that use
+# them. eps_Lz (ε_Lz) is an engineering extension (not in the paper): an
+# optional z half-height turning the eps_L XY support DISC into a cylinder;
+# ≤0 keeps the pure-XY behaviour.
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Node 0 — sonar_scan_ned  (pipeline front-end)
-# Transforms raw leading-edge sonar returns into the odom frame and republishes
-# them on `sonar_scan`, the topic the rest of the pipeline consumes.
-# -----------------------------------------------------------------------------
+# -- Node 0 — sonar_scan_ned: raw sonar returns -> odom-frame `sonar_scan` ----
 sonar_scan_ned:
   ros__parameters:
     odom_frame:               "odom"
     sonar_frame:              "blueview_sonar"
-    sonar_cloud_topic:        "/blueview/point2/leading"
+    sonar_cloud_topic:        "/blueview/leading_edge"
     output_topic:             "sonar_scan"
-    tf_timeout:               0.5
-    scan_publish_rate:        5.0    # [Hz] throttle on republished scans
-    latency_compensation_ms:  0.0    # [ms] sonar-to-pose latency compensation
+    tf_timeout:               0.5    # [s]  ↑ wait longer for TF before dropping a scan
+    scan_publish_rate:        5.0    # [Hz] ↑ republish scans faster (more CPU)
+    latency_compensation_ms:  0.0    # [ms] ↑ assume more sonar-to-pose latency
 
-# -----------------------------------------------------------------------------
-# Node 1 — seabed_estimator
-# -----------------------------------------------------------------------------
+# -- Node 1 — seabed_estimator: scalar Kalman filter on seabed intensity μ_I --
 seabed_estimator:
   ros__parameters:
-    input_topic:        "sonar_scan"               # raw sonar returns (odom frame)
-    state_topic:        "seabed_estimator_state"   # published estimator state
-    mu_intensity_topic: "seabed_mu_intensity"      # std_msgs/Float64 mirror of mu_i — for plotting
+    input_topic:        "sonar_scan"
+    state_topic:        "seabed_estimator_state"
+    mu_intensity_topic: "seabed_mu_intensity"
 
-    # The depth Kalman filter was removed — only intensity is tracked here.
-    # SeabedEstimatorState still carries mu_h, var_h (always 0) for backward
-    # compatibility with subscribers; voxel_mapper ignores it.
+    intensity_outlier_sigma: 2.0    # [-] ↑ keep more outlier returns in the update
+    min_returns:             10     # [-] ↑ need more returns before updating (skips sparse scans)
+    i_prior_mean:            5000.0 # [I] initial seabed-intensity guess (μ_I prior)
+    i_prior_std:             1000.0 # [I] ↑ less trust in the prior (faster initial adaptation)
+    seabed_intensity_variation: 600.0 # [I] ↑ more process noise (tracks faster, noisier)
+    i_meas_noise_floor:      50.0   # [I] ↑ trust each measurement less (slower, smoother)
+    i_meas_noise_coupling:   1.0    # [-] ↑ inflate meas noise more on high-spread scans
 
-    # -- Per-scan measurement --
-    intensity_outlier_sigma: 2.0    # [-]  gate width for z_I outlier removal
-    min_returns:             10     # min returns in a scan to run an update
-
-    # -- Prior --
-    i_prior_mean: 1000.0  # [intensity]  initial seabed intensity guess
-    i_prior_std:  1000.0   # [intensity]  initial seabed intensity uncertainty
-
-    # -- Process noise from mission-scale prior --
-    # Per-scan std = variation / sqrt(_N_SCANS_FOR_DRIFT), where the scan
-    # horizon is a constant inside seabed_estimator.py (the mission's true scan
-    # count is usually unknown).
-    seabed_intensity_variation: 600.0   # [intensity]  peak-to-peak intensity over mission
-
-    # -- Adaptive measurement noise: floor + coupling * within-scan MAD --
-    i_meas_noise_floor:    50.0   # [intensity]  sensor-intrinsic intensity floor
-    i_meas_noise_coupling: 1.0    # [-]          MAD coupling for intensity
-
-# -----------------------------------------------------------------------------
-# Node 2 — return_classifier
-# -----------------------------------------------------------------------------
+# -- Node 2 — return_classifier: assemble the eq-9 measurement channels -------
+# One ClassifiedReturns per scan carrying y_i = (p_i, I_i, ℓ_i, m_i): the
+# bottom reference ẑ_bed for h_i = z_i − ẑ_bed (eq 25), the overhead LiDAR
+# column (k_i, g_i — eqs 35–36) and the pass-through shape channels m_i
+# extracted upstream in leading_edge_node (sonar3d_reconstruction). No hard
+# label is assigned — classification is the soft eq-16 responsibility computed
+# in voxel_mapper. The seabed_estimator state (μ_I/σ_I) is now OPTIONAL: it
+# rides the output message as telemetry only, since the class intensity means
+# μ_c of classes.yaml are ABSOLUTE values (eq 34), not offsets from μ_I.
 return_classifier:
   ros__parameters:
-    input_topic:   "sonar_scan"               # raw sonar returns (odom frame)
-    lidar_topic:   "/cloud_registered"        # LiDAR point cloud (odom frame)
-    state_topic:   "seabed_estimator_state"   # estimator state subscription
-    odom_topic:    "odometry"                 # USV pose, for slant range
-    output_topic:  "classified_returns"       # published classified batch
+    input_topic:   "sonar_scan"
+    lidar_topic:   "/cloud_registered"  # registered surface-LiDAR cloud P_L (eq 35)
+    state_topic:   "seabed_estimator_state"  # OPTIONAL — μ_I/σ_I telemetry only
+    odom_topic:    "odometry"
+    output_topic:  "classified_returns"
 
-    # -- Adaptive intensity threshold (multiplier on mu_I) --
-    # Single SEABED vs (STRUCTURE/OBJECT) cut: returns brighter than
-    # lambda_str_obj * mu_I are non-SEABED (then split into STRUCTURE vs OBJECT
-    # by has_support). The Dirichlet weights are driven by the soft
-    # responsibility (alpha_i), not by this threshold.
-    lambda_str_obj: 2.0   # [-]  tau_str_obj = lambda_str_obj * mu_I
+    # -- Overhead LiDAR column ℓ_i = (k_i, g_i)  (paper eqs 35–36) -------------
+    eps_xy:  0.30   # [m]  ε_xy — horizontal radius of the vertical LiDAR column
+                    #       K_i above the RETURN's own XY (eq 35): k_i = |K_i|,
+                    #       g_i = min_{q∈K_i} z_q − z_i. ↑ wider column → more
+                    #       overhead support counted (structure attribution
+                    #       reaches farther sideways, gets coarser).
 
-    # -- Geometric LiDAR support factors (shipped separately, combined in voxel_mapper) --
-    # d_factor     = exp(-d / d_scale),                       d = ||return_xy - q*_xy||
-    # count_factor = 1 - exp(-alpha_count * count),           count = # LiDAR pts within r_lidar of q*
-    # voxel_mapper multiplies these into the STRUCTURE responsibility (with the
-    # intensity-similarity gate); the complement goes to OBJECT.
-    r_lidar:     0.5      # [m]  full-disc radius around q* for count_factor
-    d_scale:     0.2      # [m]  sharp distance gate length for d_factor. Smaller = stricter "I am AT a LiDAR point".
-    alpha_count: 0.05     # [-]  count_factor saturation rate (raise to make LiDAR proximity matter more)
+    # -- Rolling bottom reference ẑ_bed(x, y)  (feeds h_i, eq 25) --------------
+    # Per-XY-cell EMA of a LOW z-quantile of each scan. Only the low quantile
+    # enters, so returns from walls/objects (ABOVE the bed) bias the reference
+    # little; the position factor widens ω_c for structure precisely because
+    # this reference is approximate.
+    bed_cell_size: 0.5   # [m]  XY cell of the bottom grid; ↑ coarser/smoother ẑ_bed
+                         #       (fewer cells, less local bathymetry detail)
+    bed_quantile:  0.25  # [-]  scan z-quantile blended into each cell; ↑ toward
+                         #       the median → raised returns pull ẑ_bed upward more
+    bed_forget:    0.10  # [-]  per-scan EMA blend α; ↑ adapt to new bathymetry
+                         #       faster, but the reference gets noisier
 
-# -----------------------------------------------------------------------------
-# Node 3 — voxel_mapper
-# Accumulates Dirichlet evidence. It does NOT promote — it publishes the active
-# store as a snapshot and retires voxels when seabed_surface feeds keys back.
-# -----------------------------------------------------------------------------
+    # -- LEGACY nearest-LiDAR support (NOT consumed by eq 24) ------------------
+    # Kept for the debug observers and the lidar_dist/lidar_count telemetry
+    # channels of ClassifiedReturns.
+    eps_L:   0.1    # [m]  ε_L — LiDAR support-count radius around q*.
+                    #       Counts LiDAR over a bigger XY disc as ↑ (more support).
+                    #       XY/horizontal match for q* and d (z ignored there):
+                    #       sonar is underwater, LiDAR on the surface — see the
+                    #       return_classifier docstring.
+    eps_Lz:  0.50   # [m]  ε_Lz — z half-height of the COUNT cylinder. >0 trims the
+                    #       support set to LiDAR within ±ε_Lz of q*'s z (XY disc ∩
+                    #       z band), so LiDAR at a very different height than q*
+                    #       stops inflating the legacy count. ↑ taller band (more
+                    #       z tolerant); ≤0 = DISABLED → pure XY disc. Does NOT
+                    #       affect q*/d. MUST match the two debug nodes' eps_Lz.
+
+# -- Node 3 — voxel_mapper: per-voxel Dirichlet update over the FIXED classes -
+# Evaluates the four factors of eq 24 for every return, folds the eq-16
+# responsibilities (under the eq-23 spatial prior when eps > 0) into each
+# voxel's Dirichlet soft counts (eq 20), and publishes the posterior means
+# (eq 21) as per-class theta_<name> point fields.
+# ALL CLASS TUNING LIVES IN classes.yaml (see classes_file below) — adding,
+# removing or retuning a class is a classes.yaml edit + restart; nothing
+# class-specific is configured here.
 voxel_mapper:
   ros__parameters:
-    input_topic:         "classified_returns"   # classified returns subscription
-    voxel_topic:         "dirichlet_voxels"     # active voxel cloud (visualisation)
-    voxel_map_topic:     "dirichlet_voxel_map"  # full snapshot for seabed_surface
-    promoted_keys_topic: "promoted_voxel_keys"  # promotion feedback (subscribed)
-    map_frame:           "odom"
+    input_topic:     "classified_returns"
+    voxel_topic:     "dirichlet_voxels"
+    voxel_map_topic: "dirichlet_voxel_map"
+    telemetry_topic: "eq24_telemetry"   # per-scan Eq24Telemetry: which factor
+                                        # drives which class (Foxglove/PlotJuggler)
+    map_frame:       "odom"
 
-    r_v:             0.20   # [m]  voxel resolution
-    ring_buffer_len: 10     # [-]  recent return depths kept per voxel
+    classes_file: ""  # class-inventory YAML (Table I values + "other" block).
+                      # '' = package default share/sonar_map/config/classes.yaml.
+                      # Point it at a copy to A/B alternative inventories.
+                      # REMEMBER: the launch reads the INSTALLED share dir —
+                      # editing src/.../classes.yaml needs a colcon build.
 
-    # -- Dirichlet-Categorical model --
-    alpha_0:   0.01   # [-]  symmetric Dirichlet prior concentration (<< 1)
+    r_v:       0.05   # [m]  VOXEL SIZE — ↑ coarser map (fewer voxels, less CPU/RAM).
+    alpha_0:   0.01   # [-]  α — symmetric Dirichlet prior (MUST match
+                      #       seabed_surface.alpha_0); ↑ more uniform priors.
 
-    # -- Sonar elevation-angle uncertainty --
-    # A SEABED return at slant range r is uncertain in z by Delta_z = k_elev * r,
-    # so its unit mass is spread uniformly over voxels in [z - Delta_z/2,
-    # z + Delta_z/2]. Set 0 to disable the spread and revert to a single voxel.
-    k_elev: 0.0
+    # -- Spatial prior (paper eq 23) ------------------------------------------
+    eps:       0.0    # [m]  ε — neighbourhood radius for the evidence-weighted
+                      #       neighbour-posterior prior. 0 = DISABLED → uniform
+                      #       symmetric-α_0 prior (r = L/ΣL), vectorised fast path
+                      #       (no ε-ball query, no snapshot). Set >0 (≳ a few × r_v)
+                      #       to enable the paper's eq-23 spatial coupling.
 
-    # -- Soft Dirichlet responsibility (per-return class distribution) --
-    # u            = max(I - mu_i, 0) / mu_i                  intensity excess
-    # r_sb         = exp(-alpha_i * u)                        SEABED responsibility
-    # f_L_geom     = d_factor * count_factor                  geometric LiDAR gate (from message)
-    # similarity   = exp(-(I - mu_str_local)^2 / (2 sigma^2)) intensity match to local structure profile
-    #                (mu_str_local = mean intensity_mean of neighbour voxels with
-    #                 d_factor_cached >= tau_sim; sigma = sigma_sim * mu_str_local;
-    #                 similarity = 1 when fewer than n_min_neighbors qualify)
-    # f_L_eff      = f_L_geom * similarity                    final STRUCTURE gate
-    # f_obj_boost  = 1 - exp(-alpha_obj * max(u - u_obj_thresh, 0))
-    #                "very bright -> OBJECT" boost; steals f_obj_boost of the
-    #                STRUCTURE share into OBJECT. 0 unless u > u_obj_thresh.
-    # r_str        = (1 - r_sb) * f_L_eff * (1 - f_obj_boost) STRUCTURE
-    # r_obj        = (1 - r_sb) * ((1 - f_L_eff) + f_L_eff * f_obj_boost)  OBJECT
-    # Sum = 1 per non-FREE return.
-    # alpha_i sharpness rule: alpha_i = ln(2) / u_half, where u_half is the
-    # intensity excess (I_decision - mu_i)/mu_i at which you want r_sb = 0.5.
-    alpha_i:           1.0    # [-]  intensity-gate sharpness (higher = sharper SB <-> non-SB)
+    # -- Elevation band (engineering detail; work-stream B replaces with a beam
+    #    kernel). Δz = k_elev·slant_range, mass spread uniformly over the band.
+    #    The elevation AMBIGUITY itself already enters eq 24 through ϱ_i (eq 30). --
+    k_elev:    0.0    # [-]  ↑ spread each return over more z-voxels; 0 = single voxel
 
-    # -- LiDAR-derived per-voxel STRUCTURE prior --
-    # On voxel creation we cache d_factor_cached from the first observation, then
-    # set alpha_str_prior = beta_struct_prior * d_factor_cached. This prior enters
-    # pi_str's numerator (and once in the shared denominator), so LiDAR-proximate
-    # voxels start as STRUCTURE and decay toward their evidence-driven posterior.
-    beta_struct_prior: 3.0    # [-]  prior strength (~pseudo-observations of STRUCTURE at d=0)
+    # -- Display / publishing (no effect on the posterior or the MAP label) ---
+    active_publish_rate: 2.0 # [Hz] ↑ republish voxel cloud faster (more CPU)
+    snapshot_rate:   1.0    # [Hz]  ↑ snapshot to seabed_surface faster
+    w_ref:           5.0    # [-]   displayed confidence = max_c θ̂_c · tanh(W/w_ref); ↑ need more W for full confidence
+    w_display_min:   1.0    # [-]   ↑ raise display-only floor on W
 
-    # -- Intensity-similarity gate (drives side voxels' pi_str down over time) --
-    sigma_sim:         0.3    # [-]  tolerance as fraction of mu_str_local: sigma = sigma_sim * mu_str_local
-    tau_sim:           0.5    # [-]  d_factor threshold for "structure-plausible" neighbour
-    r_sim_voxels:      2      # [-]  neighbour search radius in voxels (cube side = 2*R + 1)
-    n_min_neighbors:   3      # [-]  min qualifying neighbours before similarity gating kicks in (else similarity = 1)
-
-    # -- "Very bright -> OBJECT" boost --
-    # Once a return's intensity excess u = (I - mu_i)/mu_i exceeds u_obj_thresh,
-    # f_obj_boost = 1 - exp(-alpha_obj * (u - u_obj_thresh)) transfers part of
-    # the LiDAR-supported STRUCTURE share into OBJECT. Lets isolated very-bright
-    # returns register as OBJECT even when they sit near a LiDAR cluster.
-    # Setting alpha_obj = 0 (or u_obj_thresh = +inf) disables the boost.
-    u_obj_thresh:      0.5    # [-]  u must exceed this to engage (0.5 = I > 1.5*mu_i)
-    alpha_obj:         1.5    # [-]  saturation rate above the threshold
-
-    # -- Publish rates --
-    active_publish_rate: 5.0    # [Hz]  visualisation cloud republish rate
-    snapshot_rate:       1.0    # [Hz]  voxel-map snapshot rate (seabed_surface input)
-    w_ref:               10.0   # [-]   tanh scale: confidence = max_pi * tanh(W/w_ref)
-    w_display_min:       1.0    # [-]   display-only lower bound on W
-
-# -----------------------------------------------------------------------------
-# Node 4 — seabed_surface
-# Stripped to the bare minimum for performance debugging: every 1/sweep_rate
-# seconds it sweeps the voxel-map snapshot, marks every SEABED-ready voxel as
-# promoted, and feeds the keys back to voxel_mapper. Patch aggregation, the
-# smoothed mesh and /debug/promoted have all been removed.
-# -----------------------------------------------------------------------------
+# -- Node 4 — seabed_surface: promotion sweep + feedback to voxel_mapper ------
 seabed_surface:
   ros__parameters:
-    voxel_map_topic:     "dirichlet_voxel_map"   # voxel-map snapshot subscription
-    promoted_keys_topic: "promoted_voxel_keys"   # promotion feedback (published)
+    voxel_map_topic:     "dirichlet_voxel_map"
+    promoted_keys_topic: "promoted_voxel_keys"
     map_frame:           "odom"
 
-    # -- Promotion-readiness check: argmax pi == SEABED, pi >= pi_conf, W >= w_conf
-    alpha_0: 0.01     # [-]  symmetric Dirichlet prior (MUST match voxel_mapper.alpha_0)
-    pi_conf: 0.7      # [-]  posterior confidence threshold
-    w_conf:  25.0     # [-]  accumulated evidence weight threshold (~25 SEABED returns)
+    seabed_class_name: "seabed"  # classes.yaml class promoted to the surface,
+                                 # matched by NAME against the snapshot's
+                                 # class_names (robust to inventory edits); a
+                                 # missing name logs an error and disables
+                                 # promotion instead of promoting column 0.
+    alpha_0: 0.01     # [-]  α — MUST match voxel_mapper.alpha_0
+    pi_conf: 0.7      # [-]  ↑ stricter posterior confidence to promote (fewer promotions)
+    w_conf:  25.0     # [-]  ↑ more accumulated evidence required to promote
+    sweep_rate: 0.2   # [Hz] ↑ sweep/promote more often
 
-    sweep_rate: 0.2   # [Hz]  promotion sweep / feedback rate (every 5 s)
+# -- Debug — lidar_count_debug: per-return LiDAR support count -> Foxglove -----
+# Publishes /debug/lidar_count: sonar return (kind=0) + the LiDAR cluster around
+# its closest q* (kind=1), paired by group_id, all carrying count=k.
+# Observes the LEGACY eps_L/eps_Lz channels, not the eq-35 column.
+lidar_count_debug:
+  ros__parameters:
+    input_topic:   "classified_returns"
+    lidar_topic:   "/cloud_registered"
+    map_frame:     "odom"
+    eps_L:         0.10   # [m]  ↑ bigger count disc (MUST match return_classifier.eps_L)
+    eps_Lz:        0.50   # [m]  z half-height of count cylinder; ≤0 = pure XY (MUST match return_classifier.eps_Lz)
+    publish_rate:  5.0    # [Hz] ↑ republish debug cloud faster
+
+# -- Debug — lidar_support_csv_logger: per-return LiDAR-support dump -> CSV -----
+# Writes one CSV row per sonar return: position, intensity, μ_I/σ_I, slant,
+# published (d, k) vs re-derived (d, k) (XY/horizontal match).
+lidar_support_csv_logger:
+  ros__parameters:
+    enable_csv:    false                       # MASTER SWITCH — true: write CSV; false: node idle
+    input_topic:   "classified_returns"
+    lidar_topic:   "/cloud_registered"
+    csv_path:      "~/ros2_ws/lidar_support_debug.csv"  # output file (overwritten each run)
+    eps_L:         0.10   # [m]  count disc radius (MUST match return_classifier.eps_L)
+    eps_Lz:        0.50   # [m]  z half-height of count cylinder; ≤0 = pure XY (MUST match return_classifier.eps_Lz)
+
+# -- Node 3b (ALT) — learned_voxel_mapper: ONLINE-LEARNED, NUMBERED classes -----
+# Parallel alternative to voxel_mapper. Same per-voxel Dirichlet update, but the
+# class likelihoods are learned online and NEW classes are created from distinct
+# intensity signatures. Classes are just NUMBERED (0,1,2,…) — NO seabed/object/
+# structure labels. FIRST-CUT SCOPE: INTENSITY ONLY (no height/LiDAR/shape, no
+# spatial prior). Publishes on its OWN topics; voxel_mapper/save_map untouched.
+# Enable with:  ros2 launch sonar_map dirichlet_voxel.launch.py learned_mapper:=true
+learned_voxel_mapper:
+  ros__parameters:
+    input_topic:        "classified_returns"
+    voxel_topic:        "learned_voxels"           # per-voxel dominant class_id + confidence
+    class_states_topic: "learned_class_states"     # live per-class μ/σ telemetry (Foxglove)
+    map_frame:          "odom"
+
+    r_v:      0.05    # [m]  voxel size
+    alpha_0:  0.01    # [-]  symmetric Dirichlet prior per class
+    eps:      0.0     # [m]  spatial-prior radius; 0 = uniform (intensity-only). >0 not
+                      #       wired in this first cut (falls back to uniform + warns).
+
+    # -- Base prior Λ_H: FULLY UNSUPERVISED — starts with 0 classes; EVERY class is
+    #    born from Λ_H as distinct intensity signatures appear (eq 53). No μ is ever
+    #    hand-set: each class's μ/σ is learned online every scan. ------------------
+    h_m0:      800.0   # [I]  central intensity for the new-class predictive (auto-set from μ_I below)
+    h_kappa0:  0.01    # [-]  ↓ tiny → uncertain mean → WIDE novelty predictive (catches novelty)
+    h_sigma0:  200.0   # [I]  expected within-class intensity spread → how SHARP new classes get
+    h_a0:      2.0     # [-]  weak variance-prior shape (confirmation budget)
+    seed_lambda_h_from_mu_i: true  # center Λ_H on the live seabed intensity μ_I on scan 1
+
+    # -- CLASS-GENERATION CONTROLS (how new classes are born) --------------------
+    # Novelty accrues per INTENSITY BIN (not per voxel): real returns are ~1-per-
+    # voxel, so a class is born when a distinct INTENSITY SIGNATURE gathers enough
+    # sustained novel returns anywhere in the map.
+    gamma:                0.5   # [-] stick-breaking concentration; ↑ novelty easier → MORE classes
+    novelty_return_floor: 0.5   # [-] r_new a single return needs to count as novel; ↑ stricter
+    novelty_bin:          150.0 # [I] width of the intensity bin novelty accrues in; ↑ coarser modes
+    novelty_min_count:    25    # [#] sustained novel returns in ONE intensity bin before birth; ↑ stricter
+    novelty_mass_thresh:  12.0  # [-] total novelty mass in that bin before birth; ↑ stricter
+    create_merge_sigmas:  3.0   # [σ] don't spawn a class within kσ of an existing one (dedup
+                                #     nearby intensity bins into one class); ↑ FEWER, broader classes
+    max_classes:          32    # [#] capacity of the dynamic inventory / per-voxel vector
+
+    # -- Publishing / display (no effect on the posterior) -----------------------
+    active_publish_rate: 2.0
+    w_ref:               5.0
+    w_display_min:       1.0
+    log_class_every:     50   # [scans] log the full class inventory this often (debug)

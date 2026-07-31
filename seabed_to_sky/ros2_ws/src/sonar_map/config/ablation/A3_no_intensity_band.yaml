@@ -1,0 +1,10 @@
+# A3 — NO ABSOLUTE INTENSITY BAND.
+# m_str(u) = exp(-(u-u_str)^2 / (2 w_str^2)). With w_str enormous, m_str ~ 1 for
+# every intensity excess u, so the band no longer constrains STRUCTURE to sit
+# between seabed (u~0) and object (u large). STRUCTURE then = f_L_geom*similarity
+# regardless of how bright/dim the return is.
+# Expect: bright objects near LiDAR get mislabelled STRUCTURE (and/or dim seabed
+# near LiDAR), so the seabed < structure < object intensity ordering breaks.
+voxel_mapper:
+  ros__parameters:
+    w_str: 1000000.0   # band so wide that m_str ~ 1 everywhere

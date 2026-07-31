@@ -15,6 +15,8 @@ set(msg_files
   "msg/ClassifiedReturns.msg"
   "msg/DirichletVoxelMap.msg"
   "msg/PromotedVoxelKeys.msg"
+  "msg/LearnedClassStates.msg"
+  "msg/Eq24Telemetry.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

@@ -44,6 +44,10 @@ class Acoustic3dEdge(Node):
                 ("sonar.threshold", Parameter.Type.DOUBLE),
                 ("sonar.min_range", Parameter.Type.DOUBLE),
                 ("sonar.max_range", Parameter.Type.DOUBLE),
+                # Beam (bearing) window in degrees — beams to KEEP. Defaults are
+                # permissive (no-op) so omitting the keys keeps every beam.
+                ("sonar.min_beam", -90.0),
+                ("sonar.max_beam", 90.0),
                 ("sonar.sound_speed", Parameter.Type.DOUBLE),
                 ("sonar.sound_speed_actual", Parameter.Type.DOUBLE),
                 ("sonar.pitch", Parameter.Type.DOUBLE),
@@ -159,6 +163,17 @@ class Acoustic3dEdge(Node):
     def _process_frame(self, msg: ProjectedSonarImage):
         """Process one sonar frame: convert, denoise, detect leading edge,
         build and publish the PointCloud2. May raise; callback() catches."""
+        # Rate limiting — gate BEFORE the (expensive) conversion / denoise /
+        # edge detection / visualization so that lowering output.publish_rate
+        # actually sheds CPU, instead of fully processing every input frame and
+        # only throttling the publish. The node is stateless per frame, so
+        # dropping a frame early is safe (no temporal model to keep warm).
+        now = self.get_clock().now()
+        if self._last_publish_time is not None and \
+                (now - self._last_publish_time) < self._min_interval:
+            return
+        self._last_publish_time = now
+
         # Convert the message to a numpy array
         image, self.ranges, self.beams = ProjectedSonarImage2Image(msg)
 
@@ -196,8 +211,33 @@ class Acoustic3dEdge(Node):
         if start_range_idx >= end_range_idx:
             self.get_logger().warn("Empty range window after cut — skipping frame.")
             return
+        # Keep the FULL (uncropped) image + beams for visualization, so the
+        # operator can see the entire B-scan — not just the processed window.
+        full_image = image.copy()
+        full_beams = self.beams.copy()
+        row_lo = int(start_range_idx)
+
+        # Crop the range axis (rows) to [min_range, max_range].
         self.ranges = self.ranges[start_range_idx:end_range_idx]
-        self.image = image[start_range_idx:end_range_idx, :]
+        cropped = image[start_range_idx:end_range_idx, :]
+
+        # Crop the beam axis (columns) to the bearing window [min_beam, max_beam]
+        # (degrees) — drops edge-of-FOV beams that produce spurious leading
+        # edges. Beams are ascending (sorted in ProjectedSonarImage2Image).
+        min_beam = np.deg2rad(self.get_parameter("sonar.min_beam").value)
+        max_beam = np.deg2rad(self.get_parameter("sonar.max_beam").value)
+        in_beam = np.where((self.beams >= min_beam) & (self.beams <= max_beam))[0]
+        if in_beam.size == 0:
+            self.get_logger().warn(
+                "Sonar frame has no beams within "
+                f"[{np.rad2deg(min_beam):.1f}, {np.rad2deg(max_beam):.1f}] deg — "
+                "skipping frame."
+            )
+            return
+        col_lo = int(in_beam[0])
+        col_hi = int(in_beam[-1]) + 1
+        self.beams = self.beams[col_lo:col_hi]
+        self.image = cropped[:, col_lo:col_hi]
 
         # Remove vertical "bar line" stripes from the B-scan before edge
         # detection. Operates on the post-cut image the detector consumes, so
@@ -226,13 +266,15 @@ class Acoustic3dEdge(Node):
                 self.get_parameter("denoise.reject_width_deg").value,
             )
 
-        # Overwrite sonar_image.png with the post-cut filtered B-scan plus the
-        # leading-edge overlay. Updated every frame; no history is kept.
+        # Overwrite sonar_image.png with the FULL (uncropped) B-scan: the
+        # processed range×beam window as a green box, the per-beam leading edge
+        # (red), and the reject_azimuths_deg columns (blue). Updated every frame.
         if self.get_parameter("output.visualize").value:
             out_dir = self.get_parameter("output.folder").value
             os.makedirs(out_dir, exist_ok=True)
-            self._save_horizontal_with_edges(
-                self.image, threshold,
+            self._save_full_with_edges(
+                full_image, full_beams, self.image, threshold,
+                row_lo=row_lo, col_lo=col_lo,
                 out_path=os.path.join(out_dir, "sonar_image.png"),
             )
 
@@ -245,13 +287,6 @@ class Acoustic3dEdge(Node):
             if len(self.profile.x) == 0:
                 return
             self.profile.valid, self.upper_bound, self.lower_bound = rolling_MAD(self.profile.x, 39, 3.0)
-
-        # Rate limiting
-        now = self.get_clock().now()
-        if self._last_publish_time is not None:
-            if (now - self._last_publish_time) < self._min_interval:
-                return
-        self._last_publish_time = now
 
         # Create the PointCloud2 message
         valid_profile = self.profile.filter_valid()
@@ -272,49 +307,65 @@ class Acoustic3dEdge(Node):
         # Publish the message
         self.pub.publish(msg)
 
-    def _save_horizontal_with_edges(self, image: np.ndarray, threshold: float,
-                                     out_path: str = "sonar_image.png") -> None:
-        """Overwrite ``out_path`` with the post-cut filtered horizontal sonar
-        image, leading-edge row per beam overlaid in red, plus soft blue
-        vertical lines marking the azimuths in ``denoise.reject_azimuths_deg``
-        (so the operator can see which beam columns the static azimuth-band
-        reject is dropping). 8-bit auto-scaled BGR PNG, viewable in any
-        standard image viewer.
+    def _save_full_with_edges(self, full_image: np.ndarray, full_beams: np.ndarray,
+                              proc_image: np.ndarray, threshold: float,
+                              row_lo: int, col_lo: int,
+                              out_path: str = "sonar_image.png") -> None:
+        """Overwrite ``out_path`` with the FULL (uncropped) horizontal B-scan,
+        annotated with:
+          - the processed range×beam window as a green rectangle (its rows are
+            [min_range, max_range], its columns [min_beam, max_beam]);
+          - the per-beam leading edge in red, computed on the processed window
+            and mapped back to full-image coordinates;
+          - soft blue vertical lines at the ``denoise.reject_azimuths_deg``
+            azimuths (on the full beam axis).
+        Lets the operator see the entire sonar image with the leading edge in
+        context, not just the cropped sub-image. 8-bit auto-scaled BGR PNG.
         """
-        if image is None or image.size == 0:
+        if full_image is None or full_image.size == 0:
             return
+        H, W = full_image.shape[:2]
 
-        # Leading-edge row per column — same formula as image2Profile.
-        occupancy = image >= threshold
-        edges = np.argmax(occupancy, axis=0)
-        valid = occupancy[edges, np.arange(len(edges))]
-        cols_valid = np.arange(len(edges))[valid]
-        rows_valid = edges[valid]
+        # Leading edge on the processed window, mapped to FULL-image coords.
+        cols_valid = np.empty(0, dtype=int)
+        rows_valid = np.empty(0, dtype=int)
+        if proc_image is not None and proc_image.size:
+            occupancy = proc_image >= threshold
+            edges = np.argmax(occupancy, axis=0)
+            valid = occupancy[edges, np.arange(proc_image.shape[1])]
+            cols_valid = np.arange(proc_image.shape[1])[valid] + col_lo
+            rows_valid = edges[valid] + row_lo
 
-        # Beam columns that the static azimuth-band reject will drop — drawn
-        # as soft blue vertical lines (alpha-blended so the sonar content
-        # shows through). One column per azimuth: nearest beam to that angle.
+        # 8-bit auto-scaled full image so the overlay is clearly visible.
+        img_max = max(int(full_image.max()), 1)
+        img_u8 = np.clip(full_image.astype(np.float32) * 255.0 / img_max,
+                         0, 255).astype(np.uint8)
+        overlay = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+
+        # Processed range×beam window (green rectangle).
+        if proc_image is not None and proc_image.size:
+            row_hi = row_lo + proc_image.shape[0] - 1
+            col_hi = col_lo + proc_image.shape[1] - 1
+            cv2.rectangle(overlay, (col_lo, row_lo), (col_hi, row_hi),
+                          (0, 255, 0), 1)  # BGR green
+
+        # Reject-azimuth columns on the FULL beam axis (soft blue lines).
         reject_az_deg = self.get_parameter("denoise.reject_azimuths_deg").value
-        reject_cols = []
-        if reject_az_deg and self.beams is not None and len(self.beams) > 0:
-            beams_rad = np.asarray(self.beams, dtype=np.float64)
+        if reject_az_deg and full_beams is not None and len(full_beams) > 0:
+            beams_rad = np.asarray(full_beams, dtype=np.float64)
+            layer = overlay.copy()
             for az_deg in reject_az_deg:
                 col = int(np.argmin(np.abs(beams_rad - np.deg2rad(az_deg))))
-                if 0 <= col < image.shape[1]:
-                    reject_cols.append(col)
-
-        # 8-bit auto-scaled image so the overlay is clearly visible.
-        img_max = max(int(image.max()), 1)
-        img_u8 = np.clip(image.astype(np.float32) * 255.0 / img_max, 0, 255).astype(np.uint8)
-        overlay = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
-        if reject_cols:
-            layer = overlay.copy()
-            for col in reject_cols:
-                cv2.line(layer, (col, 0), (col, layer.shape[0] - 1),
-                         (255, 0, 0), 1)  # BGR blue
+                if 0 <= col < W:
+                    cv2.line(layer, (col, 0), (col, H - 1), (255, 0, 0), 1)
             overlay = cv2.addWeighted(overlay, 0.6, layer, 0.4, 0)
+
+        # Leading edge (red), clipped to bounds defensively.
         if cols_valid.size:
-            overlay[rows_valid, cols_valid] = (0, 0, 255)  # BGR red
+            m = ((rows_valid >= 0) & (rows_valid < H)
+                 & (cols_valid >= 0) & (cols_valid < W))
+            overlay[rows_valid[m], cols_valid[m]] = (0, 0, 255)  # BGR red
+
         cv2.imwrite(out_path, overlay)
 
 

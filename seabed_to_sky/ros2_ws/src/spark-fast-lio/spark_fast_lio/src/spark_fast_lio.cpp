@@ -14,6 +14,8 @@
 #include <chrono>
 #include <iomanip>
 #include <cstdlib>
+#include <sstream>
+#include <thread>
 
 
 namespace spark_fast_lio {
@@ -45,6 +47,16 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   scan_lidar_pub_en_ = declare_parameter<bool>("publish.scan_lidarframe_pub_en", false);
   scan_body_pub_en_  = declare_parameter<bool>("publish.scan_bodyframe_pub_en", false);
   scan_base_pub_en_  = declare_parameter<bool>("publish.scan_baseframe_pub_en", false);
+  // Rate-limited copy of /cloud_registered for lightweight RViz visualization.
+  cloud_throttle_en_ = declare_parameter<bool>("publish.cloud_throttle_en", false);
+  {
+    const double rate = declare_parameter<double>("publish.cloud_throttle_rate", 1.0);
+    cloud_throttle_period_ = (rate > 0.0) ? 1.0 / rate : 0.0;
+  }
+  // Debug / visualization topics — default OFF to save CPU.
+  map_viz_en_        = declare_parameter<bool>("publish.map_visualization_en", false);
+  usv_marker_en_     = declare_parameter<bool>("publish.usv_marker_en", false);
+  debug_clouds_en_   = declare_parameter<bool>("publish.debug_clouds_en", false);
 
   dynamic_filter_en_ = declare_parameter<bool>("dynamic_filter.enable", false);
   {
@@ -54,8 +66,26 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
   export_kdtree_service_ = create_service<std_srvs::srv::Trigger>(
     "/export_kdtree_pcd",
-    std::bind(&SPARKFastLIO2::exportKDTreeCallback, this, 
+    std::bind(&SPARKFastLIO2::exportKDTreeCallback, this,
               std::placeholders::_1, std::placeholders::_2));
+
+  // Long-mission map prune: save+delete the far part on request (consumed in main()).
+  prune_kdtree_service_ = create_service<std_srvs::srv::Trigger>(
+    "/prune_kdtree",
+    std::bind(&SPARKFastLIO2::pruneKDTreeCallback, this,
+              std::placeholders::_1, std::placeholders::_2));
+  // Keep radius for the long-mission prune. MUST be >= cube_side_length or the
+  // prune eats FAST-LIO's local registration map and the pose diverges; it is
+  // clamped up to cube_len at prune time (see pruneFarBoxes) as a hard guard.
+  prune_keep_radius_ = declare_parameter<double>("prune.keep_radius", 200.0);
+  prune_save_dir_    = declare_parameter<std::string>("prune.save_dir", "");
+  // Distance-percentile prune: on a prune, delete the furthest `fraction` of the
+  // map points by distance from the vessel (0..1). mission_supervisor pushes this.
+  prune_fraction_    = declare_parameter<double>("prune.fraction", 0.5);
+  // Preserve the trimmed map: save every point FAST-LIO deletes before it's lost.
+  save_removed_en_      = declare_parameter<bool>("prune.save_removed_en", true);
+  removed_flush_points_ = static_cast<size_t>(
+      declare_parameter<int>("prune.removed_flush_points", 1000000));
 
   NUM_MAX_ITERATIONS_ = declare_parameter<int>("max_iteration", 4);
 
@@ -139,6 +169,8 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
 
   rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
   pub_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
+  if (cloud_throttle_en_)
+    pub_cloud_throttle_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_throttle", qos);
   if (scan_lidar_pub_en_)
     pub_cloud_lidar_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_lidar", qos);
   if (scan_body_pub_en_)
@@ -147,6 +179,9 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
     pub_cloud_base_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_base", qos);
 
   pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("odometry", qos);
+  // Per-scan odometry COMPUTE latency [ms] — the mission_supervisor watches this
+  // (grows with the ikd-tree size) to decide when to prune.
+  pub_odom_latency_ = create_publisher<std_msgs::msg::Float64>("odometry_latency_ms", qos);
   if (path_en_) {
     pub_path_                 = create_publisher<nav_msgs::msg::Path>("path", qos);
     path_msg_.header.frame_id = map_frame_;
@@ -228,11 +263,17 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   diag_timer_ =
       create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::diagnosticCallback, this));
 
-  map_viz_timer_ =
-      create_wall_timer(std::chrono::seconds(5), std::bind(&SPARKFastLIO2::mapVizCallback, this));
+  // Only run the viz/marker timers when their topics are enabled — skips the
+  // whole-map flatten / marker build entirely when off.
+  if (map_viz_en_) {
+    map_viz_timer_ =
+        create_wall_timer(std::chrono::seconds(5), std::bind(&SPARKFastLIO2::mapVizCallback, this));
+  }
 
-  usv_marker_timer_ =
-      create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::usvMarkerCallback, this));
+  if (usv_marker_en_) {
+    usv_marker_timer_ =
+        create_wall_timer(std::chrono::seconds(1), std::bind(&SPARKFastLIO2::usvMarkerCallback, this));
+  }
 
   if ((preprocessor_->point_filter_num != 1 && point_filter_num_ > 1)) {
     RCLCPP_DEBUG(this->get_logger(),
@@ -431,9 +472,52 @@ void SPARKFastLIO2::pclPointIMUToBase(PointType const *const pi, PointType *cons
   po->intensity = pi->intensity;
 }
 
+// Drain the points the ikd-tree has TRIMMED (per-scan ±cube_len/2 cull in
+// lasermapFovSegment, plus our prune) and ACCUMULATE them, flushing to disk once
+// the buffer is large. This is what preserves the parts of the map that scroll
+// out of FAST-LIO's local window — otherwise they are permanently discarded.
 void SPARKFastLIO2::collectRemovedPoints() {
-  PointVector points_history;
-  ikd_tree_.acquire_removed_points(points_history);
+  PointVector removed;
+  ikd_tree_.acquire_removed_points(removed);
+  if (!save_removed_en_ || removed.empty()) return;
+  removed_buffer_.insert(removed_buffer_.end(), removed.begin(), removed.end());
+  if (removed_buffer_.size() >= removed_flush_points_) flushRemovedBuffer();
+}
+
+// Save the accumulated trimmed points to mission/lidar/lidar_trimmed_<ts>.pcd
+// (async, off the main loop) and clear the buffer so RAM stays bounded.
+void SPARKFastLIO2::flushRemovedBuffer() {
+  if (removed_buffer_.empty()) return;
+  auto cloud = std::make_shared<pcl::PointCloud<PointType>>();
+  cloud->points.assign(removed_buffer_.begin(), removed_buffer_.end());
+  cloud->width = cloud->points.size();
+  cloud->height = 1;
+  cloud->is_dense = true;
+  removed_buffer_.clear();
+  PointVector().swap(removed_buffer_);            // release the buffer's RAM
+
+  const std::string dir = prune_save_dir_.empty()
+      ? (std::string(std::getenv("HOME")) + "/ros2_ws/mission/lidar")
+      : prune_save_dir_;
+  std::string ts;
+  {
+    auto now = std::chrono::system_clock::now();
+    auto tt  = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&tt), "%Y%m%d_%H%M%S");
+    ts = ss.str();
+  }
+  const std::string path = dir + "/lidar_trimmed_" + ts + ".pcd";
+  try {
+    std::filesystem::create_directories(dir);
+    std::thread([cloud, path]() {
+      try { pcl::io::savePCDFileBinaryCompressed(path, *cloud); } catch (...) {}
+    }).detach();
+    RCLCPP_INFO(get_logger(), "[trim-save] saved %zu trimmed pts -> %s",
+                cloud->points.size(), path.c_str());
+  } catch (const std::exception &e) {
+    RCLCPP_ERROR(get_logger(), "[trim-save] failed: %s", e.what());
+  }
 }
 
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg) {
@@ -821,7 +905,10 @@ void SPARKFastLIO2::mapIncremental() {
 
 void SPARKFastLIO2::publishOdometry(const state_ikfom &state, const rclcpp::Time &stamp) {
   odomAftMapped_.header.frame_id = map_frame_;
-  odomAftMapped_.header.stamp    = this->now();
+  // perf-measurement: stamp with the caller-provided time (scan time on the
+  // timer thread, IMU time on the sensor thread) instead of this->now(), so the
+  // scan-rate /odometry can be matched to its input scan by header.stamp.
+  odomAftMapped_.header.stamp    = stamp;
 
   setPoseStamp(state, odomAftMapped_.pose, viz_frame_);  // our template function
 
@@ -890,7 +977,8 @@ void SPARKFastLIO2::publishPath(const state_ikfom &state) {
 }
 
 void SPARKFastLIO2::publishFrameWorld(
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud) {
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
+    const rclcpp::Time &pub_stamp) {
   if (!scan_pub_en_) {
     return;
   }
@@ -919,10 +1007,26 @@ void SPARKFastLIO2::publishFrameWorld(
 
   sensor_msgs::msg::PointCloud2 cloud_msg;
   pcl::toROSMsg(*laserCloudWorld, cloud_msg);
-  cloud_msg.header.stamp    = this->now();
+  // perf-measurement: use the scan stamp when provided so /cloud_registered
+  // (stage B) can be matched to its input /ouster/points by header.stamp.
+  cloud_msg.header.stamp    = (pub_stamp.nanoseconds() != 0) ? pub_stamp : this->now();
   cloud_msg.header.frame_id = map_frame_;
 
   pubCloud->publish(cloud_msg);
+
+  // Rate-limited copy for RViz: re-emit the SAME world cloud on
+  // /cloud_registered_throttle at most once per cloud_throttle_period_, so a
+  // viewer can subscribe to a ~N-Hz stream instead of the full per-scan rate.
+  // Gated on the message stamp (scan time) so it tracks data, not wall clock.
+  if (cloud_throttle_en_ && pub_cloud_throttle_ && pubCloud == pub_cloud_full_) {
+    const double t = cloud_msg.header.stamp.sec + cloud_msg.header.stamp.nanosec * 1e-9;
+    if (last_throttle_pub_t_ < 0.0 ||
+        (t - last_throttle_pub_t_) >= cloud_throttle_period_) {
+      pub_cloud_throttle_->publish(cloud_msg);
+      last_throttle_pub_t_ = t;
+    }
+  }
+
   publish_count_ -= PUBFRAME_PERIOD;
 
   // Optionally do the pcd_save_en_ part
@@ -955,7 +1059,11 @@ void SPARKFastLIO2::publishFrameWorld(
 
 void SPARKFastLIO2::publishFrame(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud,
-    const std::string &frame) {
+    const std::string &frame,
+    const rclcpp::Time &pub_stamp) {
+  // perf-measurement: when pub_stamp is provided (scan-rate caller) it is the
+  // LiDAR scan time used to override this->now() for header.stamp matching.
+  const rclcpp::Time frame_stamp = (pub_stamp.nanoseconds() != 0) ? pub_stamp : this->now();
   int size = cloud_undistort_->points.size();
   PointCloudXYZI::Ptr laserCloudTransformed(new PointCloudXYZI(size, 1));
   sensor_msgs::msg::PointCloud2 cloud_msg;
@@ -966,21 +1074,21 @@ void SPARKFastLIO2::publishFrame(
       laserCloudTransformed->points[i] = cloud_undistort_->points[i];
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = this->now();
+    cloud_msg.header.stamp    = frame_stamp;
     cloud_msg.header.frame_id = lidar_frame_;
   } else if (frame == "imu") {
     for (int i = 0; i < size; i++) {
       pclPointBodyLidarToIMU(&cloud_undistort_->points[i], &laserCloudTransformed->points[i]);
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = this->now();
+    cloud_msg.header.stamp    = frame_stamp;
     cloud_msg.header.frame_id = imu_frame_;
   } else if (frame == "base") {
     for (int i = 0; i < size; i++) {
       pclPointBodyLidarToBase(&cloud_undistort_->points[i], &laserCloudTransformed->points[i]);
     }
     pcl::toROSMsg(*laserCloudTransformed, cloud_msg);
-    cloud_msg.header.stamp    = this->now();
+    cloud_msg.header.stamp    = frame_stamp;
     cloud_msg.header.frame_id = base_frame_;
   } else {
     throw std::invalid_argument("Invalid frame has been given");
@@ -1384,22 +1492,44 @@ void SPARKFastLIO2::processLidarAndImu(MeasureGroup &Measures) {
   diag_scans_processed_++;
 
   /******* Publish topics *******/
-  const auto stamp = this->now();
-  publishOdometry(latest_state_, stamp);
+  // perf-measurement: stamp the scan-rate odometry and registered clouds with
+  // the LiDAR scan time (== input /ouster/points header stamp, which is exactly
+  // Measures.lidar_beg_time, see standardLiDARCallback/time_buffer_). This lets
+  // an external latency sniffer match stages A (/odometry) and B
+  // (/cloud_registered) to their input scan by header.stamp. Falls back to
+  // this->now() only if the scan time is not yet valid.
+  const rclcpp::Time scan_stamp =
+      (Measures.lidar_beg_time > 0.0)
+          ? rclcpp::Time(static_cast<int64_t>(Measures.lidar_beg_time * 1e9), RCL_ROS_TIME)
+          : this->now();
+  // Per-scan odometry compute latency [ms] (dominated by the iterated EKF update,
+  // which scales with the ikd-tree size). Watched by mission_supervisor.
+  {
+    std_msgs::msg::Float64 lat_msg;
+    lat_msg.data = (omp_get_wtime() - t_update_start) * 1000.0;
+    pub_odom_latency_->publish(lat_msg);
+  }
+  publishOdometry(latest_state_, scan_stamp);
   mapIncremental();
+
+  // Long-mission prune: consume the request HERE (main timer thread), right after
+  // the per-scan map write, so it never races Add_Points/Delete_Point_Boxes.
+  if (prune_requested_.exchange(false)) {
+    pruneFarBoxes();
+  }
 
   if (path_en_) {
     publishPath(latest_state_);
   }
   if (scan_pub_en_) {
-    publishFrameWorld(pub_cloud_full_);
-    if (scan_lidar_pub_en_) publishFrame(pub_cloud_lidar_, "lidar");
-    if (scan_body_pub_en_) publishFrame(pub_cloud_body_, "imu");
-    if (scan_base_pub_en_) publishFrame(pub_cloud_base_, "base");
+    publishFrameWorld(pub_cloud_full_, scan_stamp);
+    if (scan_lidar_pub_en_) publishFrame(pub_cloud_lidar_, "lidar", scan_stamp);
+    if (scan_body_pub_en_) publishFrame(pub_cloud_body_, "imu", scan_stamp);
+    if (scan_base_pub_en_) publishFrame(pub_cloud_base_, "base", scan_stamp);
   }
 
   // Debug: publish each pipeline stage in world frame for visual comparison
-  {
+  if (debug_clouds_en_) {
     const auto stamp = this->now();
     auto publishDebugCloud = [&](PointCloudXYZI::Ptr cloud,
                                  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub) {
@@ -1460,6 +1590,8 @@ void SPARKFastLIO2::exportKDTreeCallback(
   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
   std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
 
+flushRemovedBuffer();   // persist any pending trimmed points before exporting the window
+
 if (ikd_tree_.Root_Node == nullptr) {
   response->success = false;
   response->message = "KD-tree is empty";
@@ -1492,6 +1624,135 @@ try {
 }
 }
 
+
+// Long-mission RAM relief. The service only flags the request; the heavy work
+// runs in main() (see pruneFarBoxes) so it shares the map-write thread.
+void SPARKFastLIO2::pruneKDTreeCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+  if (ikd_tree_.Root_Node == nullptr) {
+    response->success = false;
+    response->message = "KD-tree empty, nothing to prune";
+    return;
+  }
+  prune_requested_.store(true);
+  response->success = true;
+  response->message =
+      "prune scheduled (keep_radius=" + std::to_string(prune_keep_radius_) + " m)";
+}
+
+// Distance-percentile prune (latency-triggered). Runs ONLY in the main() timer
+// thread (right after mapIncremental), so it never races Add_Points/Delete_Point_
+// Boxes and the EKF/IMU state (kf_, imu_processor_) is never touched. On each call:
+//   (step 2) save the FULL current LiDAR map to disk (async), then
+//   (step 3) delete the furthest `prune_fraction_` of points by distance from the
+//            vessel, saving that removed part too.
+// ODOMETRY SAFETY: the ikd-tree IS FAST-LIO's registration map (bounded to the
+// cube_len window by lasermapFovSegment). The keep radius is FLOORED at cube_len/2,
+// so the prune can only ever remove points already OUTSIDE the registration
+// window — it can never starve the scan-matcher, whatever fraction is requested.
+void SPARKFastLIO2::pruneFarBoxes() {
+  if (ikd_tree_.Root_Node == nullptr) return;
+
+  const V3D c = kf_.get_lidar_position();          // vessel position (world frame)
+
+  // Flatten the whole map ONCE — reused for the full-map save AND the distance
+  // percentile below.
+  PointVector all_points;
+  ikd_tree_.flatten(ikd_tree_.Root_Node, all_points, NOT_RECORD);
+  const size_t n = all_points.size();
+  if (n == 0) return;
+
+  const std::string dir = prune_save_dir_.empty()
+      ? (std::string(std::getenv("HOME")) + "/ros2_ws/mission/lidar")
+      : prune_save_dir_;
+  std::string ts;
+  {
+    auto now = std::chrono::system_clock::now();
+    auto tt  = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&tt), "%Y%m%d_%H%M%S");
+    ts = ss.str();
+  }
+  auto save_async = [this, dir](const pcl::PointCloud<PointType>::Ptr &cloud,
+                                const std::string &path) {
+    if (cloud->points.empty()) return;
+    cloud->width = cloud->points.size(); cloud->height = 1; cloud->is_dense = true;
+    try {
+      std::filesystem::create_directories(dir);
+      std::thread([cloud, path]() {
+        try { pcl::io::savePCDFileBinaryCompressed(path, *cloud); } catch (...) {}
+      }).detach();
+    } catch (const std::exception &e) {
+      RCLCPP_ERROR(get_logger(), "[prune] save failed: %s", e.what());
+    }
+  };
+
+  // ---- Step 2: save the FULL current LiDAR map (snapshot before pruning) ----
+  auto full_cloud = std::make_shared<pcl::PointCloud<PointType>>();
+  full_cloud->points.assign(all_points.begin(), all_points.end());
+  save_async(full_cloud, dir + "/lidar_full_" + ts + ".pcd");
+
+  // ---- Step 3: distance-percentile prune ----
+  // Per-point distance from the vessel; keep the closest (1-fraction), delete the
+  // furthest `fraction`. Keep radius R = the (1-fraction) quantile of the distances.
+  std::vector<float> dists(n);
+  for (size_t i = 0; i < n; ++i) {
+    const double dx = all_points[i].x - c(0);
+    const double dy = all_points[i].y - c(1);
+    const double dz = all_points[i].z - c(2);
+    dists[i] = static_cast<float>(std::sqrt(dx * dx + dy * dy + dz * dz));
+  }
+  const double frac = std::min(std::max(prune_fraction_, 0.0), 1.0);
+  size_t keep_n = static_cast<size_t>(std::llround((1.0 - frac) * static_cast<double>(n)));
+  if (keep_n >= n) keep_n = n - 1;                 // delete at least the single furthest
+  std::vector<float> tmp = dists;
+  std::nth_element(tmp.begin(), tmp.begin() + keep_n, tmp.end());
+  double R = tmp[keep_n];                           // (1-frac) quantile distance
+
+  // ODOMETRY SAFETY floor: never keep less than cube_len/2 (the registration window).
+  const double floor_R = cube_len_ / 2.0;
+  bool clamped = false;
+  if (R < floor_R) { R = floor_R; clamped = true; }
+
+  // Keep cube (clipped to tree extent) + the outside slabs to delete.
+  const BoxPointType tr = ikd_tree_.tree_range();
+  float keep_min[3], keep_max[3];
+  for (int i = 0; i < 3; ++i) {
+    keep_min[i] = std::max(static_cast<float>(c(i) - R), tr.vertex_min[i]);
+    keep_max[i] = std::min(static_cast<float>(c(i) + R), tr.vertex_max[i]);
+  }
+  std::vector<BoxPointType> far_boxes;
+  for (int i = 0; i < 3; ++i) {
+    if (keep_min[i] > tr.vertex_min[i]) { BoxPointType b = tr; b.vertex_max[i] = keep_min[i]; far_boxes.push_back(b); }
+    if (keep_max[i] < tr.vertex_max[i]) { BoxPointType b = tr; b.vertex_min[i] = keep_max[i]; far_boxes.push_back(b); }
+  }
+  if (far_boxes.empty()) {
+    RCLCPP_INFO(get_logger(),
+        "[prune] keep R=%.1f m%s covers the whole map (%zu pts) — saved full, nothing to delete",
+        R, clamped ? " [floored to cube_len/2]" : "", n);
+    return;
+  }
+
+  // Save the FAR part being removed (async), then delete it.
+  auto far_cloud = std::make_shared<pcl::PointCloud<PointType>>();
+  for (const auto &p : all_points) {
+    const bool inside = (p.x >= keep_min[0] && p.x <= keep_max[0] &&
+                         p.y >= keep_min[1] && p.y <= keep_max[1] &&
+                         p.z >= keep_min[2] && p.z <= keep_max[2]);
+    if (!inside) far_cloud->points.push_back(p);
+  }
+  save_async(far_cloud, dir + "/lidar_pruned_" + ts + ".pcd");
+
+  const int before  = ikd_tree_.size();
+  const int removed = ikd_tree_.Delete_Point_Boxes(far_boxes);
+  const int after   = ikd_tree_.size();
+  RCLCPP_INFO(get_logger(),
+      "[prune] furthest %.0f%% -> keep R=%.1f m%s | removed %d pts (%d -> %d) | "
+      "saved full=%zu far=%zu -> %s",
+      frac * 100.0, R, clamped ? " [floored to cube_len/2]" : "",
+      removed, before, after, n, far_cloud->points.size(), dir.c_str());
+}
 
 void SPARKFastLIO2::mapVizCallback() {
   if (ikd_tree_.Root_Node == nullptr) return;

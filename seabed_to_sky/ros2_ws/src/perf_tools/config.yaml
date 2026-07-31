@@ -1,0 +1,114 @@
+# =============================================================================
+# perf_tools configuration — seabed-to-sky mapping performance suite
+# =============================================================================
+# Single source of truth for: topic names + types, nominal sensor rates,
+# per-process match strings, throttle temperature, warm-up, and plot sizes.
+# Used by latency_sniffer.py, resource_logger.py, map_growth_logger.py and
+# analyze_perf.py. Edit topic names / rates here when moving to a new bag or
+# the real Jetson — nothing else needs to change.
+#
+# Sonar source for this configuration: BLUEVIEW.
+# =============================================================================
+
+run:
+  warmup_s: 60          # seconds of mission time discarded as warm-up in analysis
+  csv_flush_rows: 200   # latency_sniffer buffered-writer flush threshold
+
+# -----------------------------------------------------------------------------
+# Topics to subscribe. role drives analysis wiring; type is the ROS message
+# type string "pkg/msg/Type"; qos is "sensor" (BEST_EFFORT, KEEP_LAST 5) or
+# "reliable" (RELIABLE, KEEP_LAST depth). pointcloud: true => log point_count.
+# -----------------------------------------------------------------------------
+topics:
+  # --- Sky chain (LiDAR -> FastLIO) ---
+  - name: /ouster/points
+    type: sensor_msgs/msg/PointCloud2
+    role: lidar_input
+    qos: sensor
+    pointcloud: true
+  - name: /odometry
+    type: nav_msgs/msg/Odometry
+    role: fastlio_odom          # stage A output
+    qos: reliable
+    pointcloud: false
+  - name: /cloud_registered
+    type: sensor_msgs/msg/PointCloud2
+    role: fastlio_skymap        # stage B output
+    qos: sensor
+    pointcloud: true
+
+  # --- Seabed chain (BlueView sonar -> leading edge -> non-semantic map) ---
+  - name: /blueview_message_polar
+    type: marine_acoustic_msgs/msg/ProjectedSonarImage
+    role: sonar_input
+    qos: sensor
+    pointcloud: false
+  - name: /blueview/leading_edge
+    type: sensor_msgs/msg/PointCloud2
+    role: leading_edge          # stage C output (new leading_edge_node pipeline)
+    qos: sensor
+    pointcloud: true
+  - name: /sonar_map/last_insert_stamp
+    type: geometry_msgs/msg/PointStamped
+    role: seabed_insert         # stage D exact per-insert debug stamp
+    qos: reliable
+    pointcloud: false
+  - name: /sonar_map
+    type: sensor_msgs/msg/PointCloud2
+    role: seabed_map            # cumulative map (timer-published, size/refresh only)
+    qos: sensor
+    pointcloud: true
+
+# -----------------------------------------------------------------------------
+# Latency chains: how stages A-D and the two end-to-end chains are matched
+# offline by header.stamp in analyze_perf.py. (from -> to, matched on stamp.)
+# -----------------------------------------------------------------------------
+stages:
+  A: { name: "FastLIO odometry",      from: lidar_input,   to: fastlio_odom }
+  B: { name: "FastLIO sky map",       from: lidar_input,   to: fastlio_skymap }
+  C: { name: "Leading-edge extract",  from: sonar_input,   to: leading_edge }
+  D: { name: "Seabed map insert",     from: leading_edge,  to: seabed_insert }
+chains:
+  sky:    { name: "LiDAR -> sky map",            stages: [B] }
+  seabed: { name: "Sonar -> leading edge -> seabed", stages: [C, D] }
+
+# -----------------------------------------------------------------------------
+# Nominal sensor / publish rates (Hz) used for the real-time-factor plot.
+# -----------------------------------------------------------------------------
+nominal_rates_hz:
+  # The two values that matter for the RTF plot are the CHAIN INPUT sensors:
+  /ouster/points: 10.0           # Ouster OS2-128 (sky chain deadline = 100 ms)
+  /blueview_message_polar: 10.0  # BlueView sonar (seabed chain deadline = 100 ms)
+                                 # measured ~8.9 Hz in mission_DemoDays; set to the
+                                 # real sensor spec rate for the deadline.
+  # The rest are reference only (outputs); odometry is published at IMU rate.
+  /odometry: 100.0               # FastLIO publishes odom at IMU rate (~100 Hz)
+  /cloud_registered: 10.0        # scan-rate registered cloud
+  /blueview/leading_edge: 10.0   # leading-edge extractor (new pipeline, ~sonar rate)
+  /sonar_map: 1.0                # sonar_map_ned_no_semantic publish_rate
+  imu: 100.0                     # Ouster IMU (not sniffed; reference only)
+
+# -----------------------------------------------------------------------------
+# Per-process resource attribution. match = substring searched in the process
+# name OR full command line (psutil). label is used in CSV columns + plots.
+# -----------------------------------------------------------------------------
+process_names:
+  - { label: fastlio,      match: spark_lio_mapping_mt }   # C++ executable basename
+  - { label: leading_edge, match: leading_edge_node }      # python3 <...>/leading_edge_node
+  - { label: seabed_map,   match: sonar_map_ned_no_semantic }
+
+# -----------------------------------------------------------------------------
+# Jetson thermal/throttle reference (drawn as a line on the temperature panel).
+# -----------------------------------------------------------------------------
+throttle_temp_c: 85.0
+
+# -----------------------------------------------------------------------------
+# Plot settings — IEEE column widths (inches), publication quality.
+# -----------------------------------------------------------------------------
+plot:
+  single_col_in: 3.5
+  double_col_in: 7.16
+  panel_height_in: 1.8
+  dpi: 300
+  font_family: serif
+  rolling_window_s: 60     # rolling window for degradation/RTF plots

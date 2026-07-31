@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-seabed_surface — Node 4 of the Dirichlet voxel mapping pipeline.
+seabed_surface — Node 4 of the eq-24 Dirichlet voxel mapping pipeline.
 ===============================================================================
 
 Owns the promotion protocol. On a periodic sweep (`sweep_rate`, default 0.2 Hz)
 it takes the latest Dirichlet voxel-map snapshot from voxel_mapper, finds
-every voxel whose dominant class is SEABED and which clears the promotion
-criterion, marks them as promoted, and sends the keys back to voxel_mapper so
-it can retire them.
+every voxel whose dominant class is the promoted class and which clears the
+promotion criterion, marks them as promoted, and sends the keys back to
+voxel_mapper so it can retire them.
+
+The class set is NOT hardcoded: the snapshot carries the full inventory
+(n_classes, class_names, flattened soft counts w) as defined by classes.yaml
+plus the trailing catch-all "other". The promoted class is matched by NAME
+(`seabed_class_name`, default 'seabed') against class_names of EVERY snapshot,
+so editing/reordering classes.yaml never silently promotes the wrong column —
+an absent name logs an error and disables promotion instead.
 
 NOTE: patch aggregation, the smoothed Delaunay mesh, the patch point cloud and
 the cumulative /debug/promoted cloud were intentionally stripped from this
@@ -16,14 +23,12 @@ promotion sweep + feedback remain. The Patch / Kalman / smoothing code lives
 in git history if you want it back.
 
 PROMOTION-READINESS CHECK  (applied here, once per sweep)
-  Posterior class probabilities under the symmetric Dirichlet prior alpha_0
-  plus the per-voxel LiDAR-derived STRUCTURE prior alpha_str_prior (only
-  enters pi_str's numerator and the shared denominator):
-      pi_c    = (alpha_0 + w_c) / Z              for c != STRUCTURE
-      pi_str  = (alpha_0 + alpha_str_prior + w_str) / Z
-      Z       = 4*alpha_0 + alpha_str_prior + W
-  A voxel is promoted when:
-      argmax_c pi_c == SEABED  AND  pi_SEABED >= pi_conf  AND  W >= w_conf
+  Posterior class probabilities (paper eq 21) under the symmetric Dirichlet
+  prior alpha_0 over the K̃ = n_classes categories of the snapshot:
+      pi_c    = (alpha_0 + w_c) / Z
+      Z       = K̃*alpha_0 + W
+  A voxel is promoted when (c* = index of `seabed_class_name`):
+      argmax_c pi_c == c*  AND  pi_c* >= pi_conf  AND  W >= w_conf
   Promotion is irreversible — a voxel is promoted at most once.
 
 TOPICS
@@ -39,12 +44,12 @@ from rclpy.node import Node
 from sonar_map_msgs.msg import DirichletVoxelMap, PromotedVoxelKeys
 
 
-SEABED = 1   # index of SEABED in the weight vector [free, sb, obj, str]
-
 # ── Defaults — overridable from the YAML config / launch arguments ────────────
 VOXEL_MAP_TOPIC     = 'dirichlet_voxel_map'
 PROMOTED_KEYS_TOPIC = 'promoted_voxel_keys'
 MAP_FRAME           = 'odom'
+
+SEABED_CLASS_NAME = 'seabed'  # promoted class, matched by NAME in class_names
 
 ALPHA_0    = 0.01    # [-]  symmetric Dirichlet prior (<< 1)
 PI_CONF    = 0.70    # [-]  posterior confidence threshold
@@ -60,6 +65,7 @@ class SeabedSurfaceNode(Node):
         self.declare_parameter('voxel_map_topic',     VOXEL_MAP_TOPIC)
         self.declare_parameter('promoted_keys_topic', PROMOTED_KEYS_TOPIC)
         self.declare_parameter('map_frame',           MAP_FRAME)
+        self.declare_parameter('seabed_class_name',   SEABED_CLASS_NAME)
         self.declare_parameter('alpha_0',             ALPHA_0)
         self.declare_parameter('pi_conf',             PI_CONF)
         self.declare_parameter('w_conf',              W_CONF)
@@ -68,11 +74,11 @@ class SeabedSurfaceNode(Node):
         def gp(n):
             return self.get_parameter(n).value
 
-        self._map_frame = str(gp('map_frame'))
-        self._a0        = float(gp('alpha_0'))
-        self._four_a0   = 4.0 * self._a0
-        self._pi_conf   = float(gp('pi_conf'))
-        self._w_conf    = float(gp('w_conf'))
+        self._map_frame  = str(gp('map_frame'))
+        self._class_name = str(gp('seabed_class_name'))
+        self._a0         = float(gp('alpha_0'))
+        self._pi_conf    = float(gp('pi_conf'))
+        self._w_conf     = float(gp('w_conf'))
 
         self._promoted: set = set()   # voxel keys already promoted (irreversible)
         self._snapshot = None         # latest DirichletVoxelMap
@@ -89,8 +95,8 @@ class SeabedSurfaceNode(Node):
         self._n_promoted = 0
         self.get_logger().info(
             f'seabed_surface: sweeps {gp("voxel_map_topic")} @ {rate}Hz | '
-            f'promote SEABED voxels with pi>={self._pi_conf} & W>={self._w_conf} | '
-            f'feedback -> {gp("promoted_keys_topic")}')
+            f'promote "{self._class_name}" voxels with pi>={self._pi_conf} '
+            f'& W>={self._w_conf} | feedback -> {gp("promoted_keys_topic")}')
 
     # ── snapshot intake ───────────────────────────────────────────────────────
 
@@ -100,33 +106,46 @@ class SeabedSurfaceNode(Node):
     # ── periodic promotion sweep ──────────────────────────────────────────────
 
     def _sweep(self):
-        """Promote every SEABED-ready voxel in the latest snapshot and feed
-        the keys back to voxel_mapper so it can retire them."""
+        """Promote every ready voxel of the promoted class in the latest
+        snapshot and feed the keys back to voxel_mapper so it can retire
+        them."""
         self._sweep_count += 1
         snap = self._snapshot
         n_new = 0
         new_promotion_w = []
 
         if snap is not None and len(snap.voxel_key) > 0:
+            # The class axis is snapshot-defined (classes.yaml + "other") —
+            # resolve the promoted column by NAME on every snapshot so a
+            # reordered/edited inventory can never promote the wrong class.
+            names = list(snap.class_names)
+            if self._class_name not in names:
+                self.get_logger().error(
+                    f'seabed_class_name "{self._class_name}" is not in the '
+                    f'snapshot class inventory {names} — check classes.yaml / '
+                    f'the seabed_class_name parameter; skipping promotion sweep')
+                return
+            c_star = names.index(self._class_name)
+
+            kt   = int(snap.n_classes)                       # K̃ = K + 1
             keys = np.asarray(snap.voxel_key, dtype=np.int64)
             W    = np.asarray(snap.weight,    dtype=np.float64)
-            w4   = np.stack([np.asarray(snap.w_free, dtype=np.float64),
-                             np.asarray(snap.w_sb,   dtype=np.float64),
-                             np.asarray(snap.w_obj,  dtype=np.float64),
-                             np.asarray(snap.w_str,  dtype=np.float64)], axis=1)
-            aps  = np.asarray(snap.alpha_str_prior, dtype=np.float64)
+            if kt != len(names) or len(snap.w) != kt * len(keys):
+                self.get_logger().error(
+                    f'malformed DirichletVoxelMap: n_classes={kt}, '
+                    f'|class_names|={len(names)}, |w|={len(snap.w)}, '
+                    f'|voxel_key|={len(keys)} — skipping promotion sweep')
+                return
+            w = np.asarray(snap.w, dtype=np.float64).reshape(len(keys), kt)
 
-            # Vectorised promotion-readiness check. The per-voxel
-            # alpha_str_prior contribution lifts pi_str only, so SEABED
-            # promotion gets correspondingly harder near LiDAR-supported
-            # structures (which is the point).
-            num = self._a0 + w4
-            num[:, 3] += aps                                # STRUCTURE numerator
-            denom = self._four_a0 + aps + W                  # shared denominator
+            # Vectorised promotion-readiness check (posterior mean, eq 21)
+            # under the symmetric prior: Z = K̃·alpha_0 + W per voxel.
+            num   = self._a0 + w
+            denom = kt * self._a0 + W                        # shared denominator
             pi    = num / denom[:, None]
             dom   = np.argmax(pi, axis=1)
             pmax  = pi[np.arange(len(keys)), dom]
-            ready = (dom == SEABED) & (pmax >= self._pi_conf) & (W >= self._w_conf)
+            ready = (dom == c_star) & (pmax >= self._pi_conf) & (W >= self._w_conf)
 
             for i in np.nonzero(ready)[0]:
                 k = int(keys[i])

@@ -1,0 +1,109 @@
+[0.401s] Invoking command in '/home/rosdev/ros2_ws/src/sonar3d_reconstruction': PYTHONPATH=/home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/sonar3d_reconstruction build --build-base /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build install --record /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/install.log --single-version-externally-managed install_data
+[0.558s] running egg_info
+[0.559s] creating build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info
+[0.559s] writing build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/PKG-INFO
+[0.559s] writing dependency_links to build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/dependency_links.txt
+[0.559s] writing entry points to build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/entry_points.txt
+[0.559s] writing requirements to build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/requires.txt
+[0.559s] writing top-level names to build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/top_level.txt
+[0.559s] writing manifest file 'build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/SOURCES.txt'
+[0.560s] reading manifest file 'build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/SOURCES.txt'
+[0.560s] writing manifest file 'build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info/SOURCES.txt'
+[0.560s] running build
+[0.560s] running build_py
+[0.560s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build
+[0.560s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib
+[0.560s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.561s] copying sonar3d_reconstruction/sonar_inspect.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.568s] copying sonar3d_reconstruction/edge_detection.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.569s] copying sonar3d_reconstruction/patch_detection.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.569s] copying sonar3d_reconstruction/leading_edge_pc_saver.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.570s] copying sonar3d_reconstruction/Pool3D.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.570s] copying sonar3d_reconstruction/sonar_viewer.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.570s] copying sonar3d_reconstruction/process_sonar_image.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.571s] copying sonar3d_reconstruction/load_data.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.571s] copying sonar3d_reconstruction/__init__.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.571s] copying sonar3d_reconstruction/acoustic3d_edge.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/optitrack_to_ros.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/unpack_usv_bag.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/leading_edge_node.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/leading_edge_visualizer.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/plot_tools.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.572s] copying sonar3d_reconstruction/get_points.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.573s] copying sonar3d_reconstruction/profile.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.573s] copying sonar3d_reconstruction/sonar_to_pointcloud.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.573s] copying sonar3d_reconstruction/acoustic3d_patch.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.573s] copying sonar3d_reconstruction/transform_tools.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.574s] copying sonar3d_reconstruction/sonar_fan_render.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.574s] copying sonar3d_reconstruction/region_shapes.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction
+[0.574s] running install
+[0.574s] running install_lib
+[0.575s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.575s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/sonar_inspect.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/edge_detection.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/patch_detection.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/leading_edge_pc_saver.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/Pool3D.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/sonar_viewer.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/process_sonar_image.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/load_data.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/__init__.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/acoustic3d_edge.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/optitrack_to_ros.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/unpack_usv_bag.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/leading_edge_node.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/leading_edge_visualizer.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/plot_tools.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/get_points.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/profile.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/sonar_to_pointcloud.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/acoustic3d_patch.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.576s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/transform_tools.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.577s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/sonar_fan_render.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.577s] copying /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build/lib/sonar3d_reconstruction/region_shapes.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction
+[0.577s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/sonar_inspect.py to sonar_inspect.cpython-310.pyc
+[0.578s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/edge_detection.py to edge_detection.cpython-310.pyc
+[0.578s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/patch_detection.py to patch_detection.cpython-310.pyc
+[0.579s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/leading_edge_pc_saver.py to leading_edge_pc_saver.cpython-310.pyc
+[0.580s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/Pool3D.py to Pool3D.cpython-310.pyc
+[0.580s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/sonar_viewer.py to sonar_viewer.cpython-310.pyc
+[0.582s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/process_sonar_image.py to process_sonar_image.cpython-310.pyc
+[0.583s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/load_data.py to load_data.cpython-310.pyc
+[0.583s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/__init__.py to __init__.cpython-310.pyc
+[0.584s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/acoustic3d_edge.py to acoustic3d_edge.cpython-310.pyc
+[0.585s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/optitrack_to_ros.py to optitrack_to_ros.cpython-310.pyc
+[0.586s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/unpack_usv_bag.py to unpack_usv_bag.cpython-310.pyc
+[0.586s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/leading_edge_node.py to leading_edge_node.cpython-310.pyc
+[0.593s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/leading_edge_visualizer.py to leading_edge_visualizer.cpython-310.pyc
+[0.593s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/plot_tools.py to plot_tools.cpython-310.pyc
+[0.595s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/get_points.py to get_points.cpython-310.pyc
+[0.596s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/profile.py to profile.cpython-310.pyc
+[0.596s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/sonar_to_pointcloud.py to sonar_to_pointcloud.cpython-310.pyc
+[0.597s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/acoustic3d_patch.py to acoustic3d_patch.cpython-310.pyc
+[0.598s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/transform_tools.py to transform_tools.cpython-310.pyc
+[0.598s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/sonar_fan_render.py to sonar_fan_render.cpython-310.pyc
+[0.600s] byte-compiling /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction/region_shapes.py to region_shapes.cpython-310.pyc
+[0.602s] running install_data
+[0.602s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/ament_index
+[0.602s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/ament_index/resource_index
+[0.602s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/ament_index/resource_index/packages
+[0.602s] copying resource/sonar3d_reconstruction -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/ament_index/resource_index/packages
+[0.602s] copying package.xml -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction
+[0.602s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/launch
+[0.602s] copying launch/leading_edge.launch.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/launch
+[0.602s] copying launch/acoustic3d_launch.py -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/launch
+[0.603s] creating /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/config
+[0.603s] copying config/leading_edge.yaml -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/config
+[0.603s] copying config/params_edge_blueview.yaml -> /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/share/sonar3d_reconstruction/config
+[0.603s] running install_egg_info
+[0.603s] Copying build/sonar3d_reconstruction/sonar3d_reconstruction.egg-info to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages/sonar3d_reconstruction-0.0.0-py3.10.egg-info
+[0.604s] running install_scripts
+[0.619s] Installing acoustic3d_edge script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing acoustic3d_patch script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing leading_edge_node script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing leading_edge_pc_saver script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing leading_edge_visualizer script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing sonar_inspect script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] Installing sonar_viewer script to /home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/sonar3d_reconstruction
+[0.619s] writing list of installed files to '/home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/install.log'
+[0.637s] Invoked command in '/home/rosdev/ros2_ws/src/sonar3d_reconstruction' returned '0': PYTHONPATH=/home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/rosdev/ros2_ws/src/sonar3d_reconstruction/install/sonar3d_reconstruction/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/sonar3d_reconstruction build --build-base /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/build install --record /home/rosdev/ros2_ws/src/sonar3d_reconstruction/build/sonar3d_reconstruction/install.log --single-version-externally-managed install_data

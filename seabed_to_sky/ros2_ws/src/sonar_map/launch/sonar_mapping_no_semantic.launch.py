@@ -38,8 +38,8 @@ def generate_launch_description():
 
     arg_sonar_topic = DeclareLaunchArgument(
         'sonar_cloud_topic',
-        default_value='/blueview/point2/leading',
-        description='Sonar point cloud input topic',
+        default_value='/blueview/leading_edge',
+        description='Sonar point cloud input topic (leading_edge_node output)',
     )
 
     # ------------------------------------------------------------------ #
@@ -71,7 +71,9 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 3. save_map                                                         #
+    # 3. save_map — saves /sonar_map (this pipeline's voxel map) as ASCII #
+    #    PCD + the FAST-LIO LiDAR map + pose metadata, on                 #
+    #    ros2 service call /save_map std_srvs/srv/Trigger {}              #
     # ------------------------------------------------------------------ #
 
     node_save_map = Node(
@@ -79,6 +81,7 @@ def generate_launch_description():
         executable='save_map',
         name='save_map',
         output='screen',
+        parameters=[{'map_topic': '/sonar_map'}],
     )
 
     # ------------------------------------------------------------------ #

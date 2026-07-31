@@ -8,6 +8,22 @@ cannot be correlated by timestamp.
 
 Queue size 1 ensures we always process the freshest scan with the current pose.
 Each scan is published individually; the map node accumulates scans over time.
+
+FIELD-GENERIC PASSTHROUGH: the eq-24 pipeline attaches per-return measurement
+channels upstream of this node — most importantly the six shape/morphology
+descriptors of the leading-edge extractor (shape_flag, region_*; paper
+eqs 39–40) that ride on the same cloud as x/y/z/intensity. Rather than
+enumerate them here (and break every time a channel is added), this node reads
+ALL float32 fields of the incoming cloud by name, transforms only x/y/z into
+odom, and copies every other field through unchanged, rebuilding the PointField
+layout dynamically. With the classic 4-field input the output is byte-identical
+to the fixed-layout version.
+
+NaN GATING is restricted to the x/y/z/intensity core: the shape descriptor
+channels are NaN BY DESIGN on bare-seabed returns (the hurdle factor of eq 42
+abstains on NaN), so a whole-row skip_nans read would silently drop exactly the
+returns the shape factor needs to see. The core mask mirrors the library's
+skip_nans contract (applied only when the cloud is not flagged dense).
 """
 
 import rclpy
@@ -27,7 +43,7 @@ class SonarScanNode(Node):
         super().__init__('sonar_scan_ned')
         self.declare_parameter('odom_frame',        'odom')
         self.declare_parameter('sonar_frame',       'blueview_sonar')
-        self.declare_parameter('sonar_cloud_topic', '/blueview/point2/leading')
+        self.declare_parameter('sonar_cloud_topic', '/blueview/leading_edge')
         self.declare_parameter('output_topic',      'sonar_scan')
         self.declare_parameter('tf_timeout',        0.5)
         self.declare_parameter('scan_publish_rate', 5.0)
@@ -54,13 +70,6 @@ class SonarScanNode(Node):
 
         self._recv = self._dropped = 0
         self.create_timer(5.0, self._diag)
-
-        self._fields = [
-            PointField(name='x',         offset=0,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='y',         offset=4,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='z',         offset=8,  datatype=PointField.FLOAT32, count=1),
-            PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
-        ]
 
         self.get_logger().info(
             f'sonar_scan_ned: {sonar_topic} [{self.sonar_frame}] -> '
@@ -98,25 +107,26 @@ class SonarScanNode(Node):
         T[:3,  3] = [t.x, t.y, t.z]
         return T
 
-    def _read_points(self, msg):
+    def _read_points(self, msg, names):
         """Safe PointCloud2 read — unpacks structured array rows by field name.
+
+        Returns an (N, len(names)) float32 array, columns in `names` order.
 
         NOTE: pc2.read_points returns a numpy structured array with dtype like
         [('x', '<f4'), ('y', '<f4'), ...]. Casting that directly to float32 raises
         TypeError in ROS2 Humble's numpy. We must unpack via named field access.
+        skip_nans stays OFF here: NaN is data in the descriptor channels (hurdle
+        abstention) — the caller masks the geometric core itself.
         """
-        rows = list(pc2.read_points(msg, field_names=('x', 'y', 'z', 'intensity'),
-                                    skip_nans=True))
-        if not rows:
-            return np.empty((0, 4), dtype=np.float32)
-        arr = np.array(rows)   # structured array: dtype=[('x','f4'),('y','f4'),...]
+        arr = np.asarray(pc2.read_points(msg, field_names=names, skip_nans=False))
+        if arr.size == 0:
+            return np.empty((0, len(names)), dtype=np.float32)
         return np.column_stack(
-            [arr['x'], arr['y'], arr['z'], arr['intensity']]
-        ).astype(np.float32)
+            [np.asarray(arr[nm], dtype=np.float32) for nm in names])
 
     def _cb(self, msg: PointCloud2):
         self._recv += 1
-        
+
         # NEW: Time-based throttle - skip if not enough time has elapsed
         now = self.get_clock().now()
         if self.last_publish_time is not None:
@@ -124,32 +134,57 @@ class SonarScanNode(Node):
             if elapsed < self.min_interval:
                 self._throttled += 1
                 return  # Skip this scan
-        
+
         T = self._lookup_tf()
         if T is None:
             self._dropped += 1
             return
 
-        pts = self._read_points(msg)
+        # Field-generic layout: every scalar float32 field of the incoming
+        # cloud, in its original order. x/y/z get transformed; everything else
+        # (intensity, shape descriptors, future channels) is copied verbatim.
+        names = [f.name for f in msg.fields
+                 if f.datatype == PointField.FLOAT32 and f.count == 1]
+        if not {'x', 'y', 'z'}.issubset(names):
+            self.get_logger().warn(
+                f'Cloud missing x/y/z float32 fields (got {names}) — dropping.',
+                throttle_duration_sec=5.0)
+            self._dropped += 1
+            return
+
+        pts = self._read_points(msg, names)
+
+        # NaN gate on the x/y/z/intensity core only (mirrors read_points'
+        # skip_nans contract, incl. its is_dense gate). Descriptor-channel NaNs
+        # must survive — they are the shape factor's abstention signal (eq 42).
+        core = [names.index(nm) for nm in ('x', 'y', 'z', 'intensity')
+                if nm in names]
+        if pts.shape[0] and not msg.is_dense:
+            pts = pts[~np.isnan(pts[:, core]).any(axis=1)]
         if pts.shape[0] == 0:
             return
 
-        # Transform XYZ into odom frame; keep original intensity
-        xyz  = pts[:, :3].astype(np.float64)
+        # Transform XYZ into odom frame; keep all other channels untouched
+        ix, iy, iz = names.index('x'), names.index('y'), names.index('z')
+        xyz  = pts[:, (ix, iy, iz)].astype(np.float64)
         ones = np.ones((len(xyz), 1), dtype=np.float64)
         xyz_w = (T @ np.hstack([xyz, ones]).T).T[:, :3].astype(np.float32)
 
-        out = np.zeros(len(xyz_w),
-                       dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('intensity', 'f4')])
+        out = np.zeros(len(xyz_w), dtype=[(nm, 'f4') for nm in names])
+        for j, nm in enumerate(names):
+            out[nm] = pts[:, j]
         out['x'] = xyz_w[:, 0]
         out['y'] = xyz_w[:, 1]
         out['z'] = xyz_w[:, 2]
-        out['intensity'] = pts[:, 3]
+
+        fields = [PointField(name=nm, offset=4 * j,
+                             datatype=PointField.FLOAT32, count=1)
+                  for j, nm in enumerate(names)]
 
         h = Header()
         h.stamp = msg.header.stamp
         h.frame_id = self.odom_frame
-        self.pub.publish(pc2.create_cloud(h, self._fields, out))
+        self.pub.publish(pc2.create_cloud(h, fields, out))
 
         self.last_publish_time = now  # NEW: Update last publish time
 

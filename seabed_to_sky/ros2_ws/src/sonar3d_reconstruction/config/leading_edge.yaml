@@ -1,0 +1,375 @@
+# Simple leading-edge extractor — parameters for leading_edge_node.py.
+# Only sonar-image processing and leading-edge characteristics live here
+# (no pitch, no TF / transformations).
+leading_edge_node:
+  ros__parameters:
+    # ---- I/O ----
+    input_topic: "/blueview_message_polar"    # marine_acoustic_msgs/ProjectedSonarImage in
+    output_topic: "/blueview/leading_edge"     # sensor_msgs/PointCloud2 out (x, y, z, intensity)
+    frame_id: "blueview_sonar"
+    qos_reliability: "best_effort"             # "best_effort" (matches most bags) or "reliable"
+
+    # ---- TEMPORAL denoising: average N consecutive sonar images ----
+    # The mean of the last N pings. Speckle is uncorrelated ping to ping while the
+    # real returns are not, so the average lifts SNR by ~sqrt(N) WITHOUT blurring the
+    # image spatially (unlike the morphological/subtraction denoise below). Cost: a
+    # moving target smears over N pings, so keep N small. 1 = off, 2 = this frame +
+    # the previous one. Applied before everything else, incl. the correction map.
+    temporal_avg_frames: 2
+
+    # ---- denoising (same processing as the old acoustic3d_edge pipeline) ----
+    denoise_standard: false     # filter_horizontal_image: per-bin background subtraction,
+                               #   center-beam gain mask, range smoothing, soft threshold
+    denoise_open: 10            # morphological open iterations (3x1 kernel); 0 = off
+    denoise_destripe: true    # remove_bscan_stripes (destripe + ring-down). The old
+                               #   config set this true, but its own comment warns it
+                               #   over-attenuates and can kill the leading edge. Enable
+                               #   only if you see persistent vertical bar-line stripes.
+
+    # ---- detection ----
+    # "adaptive": per-beam threshold = floor + k * robust-sigma, computed from
+    #             EACH beam's own intensity spectrum every frame. Self-adjusts to
+    #             per-beam gain and brightness drift — no magic number to chase.
+    # "fixed":    use `threshold` for all beams (old behaviour).
+    # "window":   the fixed-threshold crossing as a SEED, then refined inside a
+    #             window around it to the best local maximum (see below).
+    detector: "window"         # seed on `threshold`, refine in the window
+    adaptive_k: 3.0            # sigmas above the per-beam floor (the only knob; ~3-8)
+    floor_percentile: 20.0     # per-beam noise floor percentile (50 = median)
+    threshold: 10000.0          # the fixed threshold t — used by "fixed" AND "window"
+    min_consecutive: 5         # edge must start >= this many consecutive bins over threshold
+    # fixed-mode auto-lower: if the leading edge covers < fixed_min_coverage of the
+    # eligible (gated, non-band) beams, drop `threshold` by fixed_threshold_step and
+    # retry, down to fixed_threshold_min. Guarantees a minimum coverage on dim frames.
+    fixed_autolower: true      # only used when detector: "fixed"
+    fixed_min_coverage: 0.5     # target fraction of eligible beams with an edge (0.5 = 50%)
+    fixed_threshold_step: 200.0 # lower `threshold` by this each iteration
+    fixed_threshold_min: 300.0  # don't lower below this (floor; stops chasing pure noise)
+
+    # ═══ "window" detector ═══════════════════════════════════════════════════
+    # The plain threshold detector puts the edge on the first bin that crosses t —
+    # i.e. on the FLANK of the return, wherever it happens to cross, which moves
+    # with the beam's brightness. This detector uses that crossing only as a rough
+    # SEED and then picks the actual PEAK of the return near it. Four things are
+    # asked of the answer, and they pull against each other:
+    #     A. the point should be the BRIGHTEST bin near the crossing
+    #     B. it should be a real PEAK (rises into it, falls after it) — not a flank
+    #     C. it should be CLOSE IN RANGE to the points its neighbouring beams chose
+    #     D. as MANY BEAMS AS POSSIBLE should produce a point at all
+    # A and C conflict (the brightest bin may be off the surface its neighbours
+    # found), so the detector does not decide beam by beam: it scores every
+    # combination and takes the cheapest one over the whole swath at once
+    # (dynamic programming, an exact global optimum — not a smoothing pass).
+    #
+    # Stage 1 SEED (and D): the first bin at/above t for >= min_consecutive bins,
+    #   inside the range gate. A beam that never crosses t gets its OWN threshold
+    #   lowered until it does — see window_autolower below.
+    # Stage 2 CANDIDATES (B): inside [seed - low_bins, seed + high_bins], every bin
+    #   that is at/above that beam's threshold AND is a local maximum along range.
+    # Stage 3 PICK (A vs C): one candidate per beam, minimising over the swath
+    #       sum_b  dim(b)  +  lambda * sum_b  jump(b, b+1) / window_span
+    #   dim(b)  = 0 if the beam took the brightest bin in its window, 1 if it took
+    #             the darkest, linear in between. "How much brightness I gave up."
+    #   jump    = |range difference in bins| between two ADJACENT beams' picks.
+    #   window_span = low_bins + high_bins + 1, which makes lambda scale-free.
+    #   Beams with no edge break the chain: continuity is never forced across a gap.
+    #
+    # ---- the window: WHERE to look for the peak ----
+    # A range bin is ~8 mm on this sonar (1219 bins over ~10 m), so 12 bins ~ 10 cm.
+    window_low_bins: 3          # bins to look BEFORE the crossing. Small but non-zero:
+                                #   min_consecutive can push the seed a few bins past a
+                                #   short peak, and this lets the beam look back at it.
+    window_high_bins: 15        # bins to look AFTER the crossing — THE knob to tune.
+                                #   It must cover the return's rise from the crossing to
+                                #   its peak. Too small and the pick stays stuck on the
+                                #   flank (nothing gained over "fixed"); too large and a
+                                #   beam can jump forward onto the NEXT return (a second
+                                #   target, or the seabed behind a plant).
+                                #   Read it off processing_steps.png: the blue seed curve
+                                #   and the red published curve are the two ends of it.
+    #
+    # ---- lambda: HOW MUCH brightness a beam may give up to stay with its neighbours ----
+    # Moving 1 bin toward a neighbour costs lambda/window_span; giving up brightness
+    # costs up to 1.0. So with lambda = 0.5 and a 19-bin window, one bin of movement
+    # "costs" 0.5/19 = 2.6% of the window's brightness range: a beam will shift 1 bin
+    # to line up only if the peak it moves to is less than 2.6% dimmer, or 5 bins if
+    # that peak is within 13%. Higher lambda = buys continuity with brightness.
+    #     0        each beam takes its own brightest peak; nothing else matters.
+    #              Truthful per beam, but a ragged, speckly edge.
+    #     0.2-0.5  gentle: only re-orders peaks of near-equal brightness. Start here.
+    #     1-3      firm: a beam WILL abandon a clearly brighter peak to stay in line.
+    #              Use when the target is a continuous surface (seabed, wall, pipe).
+    #     >5       nearly a flat-as-possible edge; the brightness term stops mattering
+    #              and real relief gets ironed out. Rarely what you want.
+    window_smooth_weight: 0.5
+    window_smooth_cap_bins: 0   # a jump costs at most this many bins (0 = uncapped).
+                                #   Uncapped, one REAL cliff in the scene (a plant beside
+                                #   bare seabed) is so expensive that the DP spreads it
+                                #   over several beams, bending them off their own peaks.
+                                #   Capped, the cliff costs one flat fee and both sides
+                                #   stay put. Set it to the biggest genuine beam-to-beam
+                                #   range step you expect: ~5-10 bins (4-8 cm) for
+                                #   vegetation on a flat bottom. THE fix for "the edge
+                                #   smears across object boundaries".
+    window_max_candidates: 8    # keep only the N brightest peaks per window (the DP costs
+                                #   N^2 per beam; 8 covers a ~19-bin window comfortably)
+    window_require_peak: false  # what to do with a window that contains NO local maximum
+                                #   (a flat plateau return). false = take its brightest
+                                #   bin anyway, so the beam still yields a point and this
+                                #   detector never produces fewer points than "fixed".
+                                #   true = drop the beam; every published point is then a
+                                #   true peak, at the cost of coverage (criterion D).
+    #
+    # ---- D: per-beam threshold auto-lower — maximise the number of beams with a point ----
+    # One global t is always a compromise: high enough for the loud beams is too high
+    # for the quiet ones, which then return NOTHING. So each beam that finds no
+    # crossing at t retries on its own at t - step, t - 2*step, ... until it finds
+    # one, stopping at window_autolower_min. Only that beam is lowered — the beams
+    # that already had an edge keep the full t, so the loud beams are never made
+    # noisier to rescue the quiet ones. (This is the per-beam version of
+    # fixed_autolower, which instead drops the threshold for the entire frame.)
+    # Watch the "N/512 beams lowered" and "points=.../512 beams" in the node's log.
+    window_autolower: true      # false = a beam with no crossing at t simply has no point
+    window_autolower_step: 500.0 # the "n": lower this beam's threshold by this each try.
+                                #   Smaller = finer (the beam stops at a threshold closer
+                                #   to the highest one that still works) but more passes.
+    window_autolower_min: 3000.0 # the "min": never go below this. THE safety floor — a
+                                #   beam that only reaches this is thresholding noise, and
+                                #   will plant a point on a speckle. Keep it comfortably
+                                #   above the water-column level in the node's
+                                #   "intensity p50=..." log line.
+
+    # ---- azimuth-band handling: blank the known-noisy beams ----
+    # When band_enable, the beams within band_half_beams of each band_azimuths center are
+    # HARD-REJECTED in detection (emit no edge) — i.e. just blank the noisy azimuths.
+    # OFF by default: the intensity correction below normally flattens the noisy beams
+    # instead, so they can be detected like any other beam. Turn ON if you'd rather drop
+    # those beams entirely.
+    band_enable: false
+    band_azimuths_deg: [-23.0, 0.0, 23.0]   # center azimuths of the noisy bands (deg)
+    band_half_beams: 17            # beams on EACH side of each center (~0.175 deg/beam)
+
+    # ---- multi-edge experiment (diagnostic; drawn on sonar_image.png) ----
+    # For detecting BIG solid structures (sustained returns) vs thin vegetation.
+    # Each edge uses the PREVIOUS edge's INTENSITY as its threshold: the 2nd edge is
+    # the next return at least as bright as the 1st edge, the 3rd the next at least
+    # as bright as the 2nd. Per beam: 2nd edge = first-crossing of threshold
+    # I1=image[1st edge] within the zone [1st edge, 1st edge + dp]; a beam is GOOD if
+    # a 2nd edge is found there; 3rd edge = the same one level down (threshold
+    # I2=image[2nd edge], zone [2nd edge, 2nd edge + dp]). 1st=red, 2nd=GREEN,
+    # 3rd=CYAN on sonar_image.png; only good beams are drawn. Purely diagnostic — it
+    # does NOT change the published cloud or the shape detection. Needs visualize: true.
+    multi_edge_enable: false        # compute + draw the 2nd/3rd leading edges
+    edge_zone_px: 30                # the "dp": search ZONE depth past each edge (in range
+                                   #   bins). The next edge must start within this many bins
+                                   #   of the previous one. IMPORTANT: a return is itself
+                                   #   min_consecutive (=10) bins long, so dp MUST exceed
+                                   #   min_consecutive for the next edge to fit — start
+                                   #   around 25-40 and tune. ↑ = look deeper past each edge.
+
+    # ---- shape extraction (eq-24: BRIGHT-BLOB detection on the denoised image, eqs 39-42) ----
+    # Target = patches that are VERY BRIGHT compared to their surroundings (algae /
+    # plants). Detected by a white TOP-HAT (image − opening; a "brighter than the
+    # local background" map) -> threshold -> connected components -> filter each blob
+    # by AREA and by local CONTRAST (interior vs a surrounding ring). A blob the
+    # leading edge crosses is a region R; six extra float32 fields per point
+    # (shape_flag, region_size, region_logarea, region_solidity, region_shadow,
+    # region_texture) feed the classifier's shape factor (eq 42). The region is a real
+    # connected blob, so ALL FOUR shape channels are meaningful (solidity too: compact
+    # ~1, irregular plant < 1). When false the cloud keeps the historical 4-field
+    # x/y/z/intensity layout, byte-identical.
+    shape_enable: false
+    shape_bg_kernel: 25          # top-hat opening kernel (px) = the object/seabed scale.
+                                 #   Bright features SMALLER than this survive; the slow seabed
+                                 #   floor larger than it is subtracted. Set a bit above the
+                                 #   biggest blob you want to catch.
+    shape_bin_thresh: 0.0        # threshold on the top-hat. <= 0 => per-frame Otsu over the
+                                 #   positive top-hat (self-tuning); a positive value pins a
+                                 #   fixed contrast cut.
+    shape_open_kernel: 3         # opening (px) that removes speckle from the mask; 0 = off.
+    shape_close_kernel: 3        # closing (px) that fills small holes in a blob; 0 = off.
+    shape_min_area_px: 20        # drop blobs smaller than this (pixels) — discretisation noise.
+    shape_max_area_px: 0         # drop blobs LARGER than this (0 = no cap) — rejects a whole
+                                 #   bright seabed swath that isn't a discrete object.
+    shape_min_contrast: 0.5     # THE "bright vs around it" knob: keep a blob only if its
+                                 #   Michelson contrast (mean inside − mean ring)/(sum) >= this,
+                                 #   0..1. ↑ demands a starker blob; ↓ admits fainter ones. Read
+                                 #   the live min/med/max off the "shape blobs:" log line.
+    shape_ring_kernel: 9         # half-width (px) of the surrounding ring the contrast is
+                                 #   measured against — how far out "the area around" reaches.
+    shape_edge_tol_bins: 5       # a leading-edge pixel counts as inside a blob if the blob lies
+                                 #   within ± this many range bins of it (the edge sits at the
+                                 #   blob's near face). ↑ ties the edge to blobs a bit further back.
+    shape_shadow_max_bins: 40    # shadow window length (range bins) behind the region for
+                                 #   the xi_R signature; roughly the shadow of the tallest
+                                 #   structure of interest
+    shape_shadow_dark_frac: 0.35 # a window pixel counts as shadow when darker than this
+                                 #   fraction of the column's region mean (lower = stricter,
+                                 #   only deep shadows score)
+
+    # ---- shape-factor debug overlay (shape_factor.png) ----
+    # Every shape_factor_every_n frames, save <visualize_folder>/shape_factor.png:
+    # the MASKED clean-blob fan (seabed suppressed, only the extracted solid objects)
+    # with the leading edge in red, the AKAZE keypoints (crossed = region colour,
+    # else grey), and each blob's hull outlined and LABELLED by the eq-42 shape
+    # factor's argmax class + confidence, plus its descriptors (a=log-area,
+    # s=solidity, sh=shadow, t=texture). The label is the SHAPE cue's opinion IN
+    # ISOLATION (not the full fused map label, which needs all four factors + the
+    # spatial prior and lives downstream in voxel_mapper). Reads class definitions
+    # from sonar_map's classes.yaml at runtime; if sonar_map isn't importable the
+    # regions are drawn without class names.
+    shape_factor_viz: false        # write shape_factor.png (needs shape_enable for
+                                  #   the cloud too; regions are extracted either way)
+    shape_factor_bg: "tophat"     # background of shape_factor.png so you SEE the
+                                  #   preprocessing: "tophat" = the contrast map
+                                  #   (bright-vs-background), "mask" = the binarised
+                                  #   object mask (what got thresholded), "raw" = the
+                                  #   sonar fan. Blobs are drawn on top; NO leading edge.
+    shape_factor_every_n: 10      # save one overlay every N sonar frames
+    shape_factor_classes_file: "" # "" = sonar_map's installed config/classes.yaml;
+                                  #   set an absolute path to label against a
+                                  #   different class set
+
+    # ---- range / bearing gate ----
+    min_range: 1.5             # m — skip the bright near-field artefact below this
+    max_range: 9.0            # m — ignore anything beyond this
+    min_bearing_deg: -90.0     # keep only beams inside this bearing window
+    max_bearing_deg: 90.0      # (sonar FOV is ~±45°)
+
+    # ---- orientation flips ----
+    # Enable only if the published cloud is mirrored vs ground truth / the old
+    # /blueview/point2/leading pipeline.
+    flip_ranges: true         # reverse the range axis (image rows). Use if near/far
+                               #   is inverted (leading edge lands behind the bright
+                               #   return). `ranges` stays ascending; only rows flip.
+    flip_beams: false          # mirror beams left<->right (sign of y). Use if
+                               #   port/starboard is swapped. false = -r*sin(bearing),
+                               #   matching the old edge_detection pipeline.
+
+    # ---- debug ----
+    visualize: false            # save sonar_image.png (raw B-scan + leading edge in red).
+                               #   OFF for max rate — the PNG write (~6-16 ms) runs in the
+                               #   data callback and caps throughput. Turn on only to inspect.
+    visualize_every_n: 10      # when visualize: true, save 1 of every N frames (keeps the
+                               #   debug image without throttling every ping)
+
+    # What gets painted ON TOP of sonar_image.png. Set both false (and
+    # intensity_grid false, below) for a BARE sweep — just the sonar image.
+    viz_leading_edge: false    # the per-beam leading edge in red (plus the
+                               #   multi-edge overlay and its legend, when that
+                               #   experiment is running). This is the whole point
+                               #   of this image for detection work — turn it off
+                               #   only when you want to look at the raw sweep.
+    viz_labels: false          # the green NEAR / FAR range labels in the corners.
+    # Step-by-step processing figure: raw -> denoised -> above floor -> above
+    # threshold -> gated occupancy -> leading edge on raw. Saved to
+    # <visualize_folder>/processing_steps.png. matplotlib render is slow (~100-300 ms),
+    # so it briefly stalls that one frame — debug only, leave off for production.
+    debug_processing: false
+    debug_processing_every_n: 20   # save the figure once every N sonar images
+    # Intensity-section grid baked into the fan sonar_image.png: split the image into
+    # intensity_grid_beams x intensity_grid_ranges polar sections and label each with the
+    # RAW mean (top) / median (below) intensity; band-beam cells in yellow. Use it to see
+    # whether the noisy beams sit on a different intensity SCALE (both mean+median high,
+    # esp. in a near-range pure-water row) vs just saturated spikes (mean >> median).
+    intensity_grid: false      # <- the 144 per-section mean/median numbers. This is
+                               #    the bulk of the clutter on sonar_image.png.
+    intensity_grid_beams: 24       # number of beam (azimuth) sections (finer = bands resolve)
+    intensity_grid_ranges: 6       # number of range sections (near->far)
+    # ---- published intensity source + per-beam correction ----
+    # The denoise center-beam gain mask AMPLIFIES the noisy-beam artifact (raw ~2.6x ->
+    # denoised ~7x), so publish RAW by default. Set "denoised" to keep the old behaviour.
+    # "raw" = this ping only; "averaged" = the temporal_avg_frames mean (same scale as
+    # raw, just less speckle — identical to "raw" when temporal_avg_frames is 1);
+    # "denoised" = the detection image.
+    intensity_source: "raw"        # "raw" | "averaged" | "denoised"
+    # Path to calibration_map.npz from train_intensity_correction.py. When set, each
+    # point's intensity is multiplied by the learned per-(beam,range) factor, flattening
+    # the noisy-beam scale. "" = no correction.
+    intensity_correction_map: "/home/rosdev/ros2_ws/intensity_model/calibration_map.npz"
+    # Run the (adaptive) detection on the NN-corrected image (raw * per-beam factor)
+    # instead of the subtraction-denoise, so the noisy beams are flattened at the source.
+    detect_on_corrected: true
+    corrected_smooth_sigma: 2.0    # light range smoothing of the corrected detection image
+    visualize_folder: "/home/rosdev/ros2_ws/src/images/blueview"
+
+# ── sonar_viewer: interactive RAW AMPLITUDE window ───────────────────────────
+# Subscribes to the same ProjectedSonarImage leading_edge_node reads, and shows
+# it as a Cartesian fan refreshed at the sonar's own rate. HOVER any pixel to
+# read its amplitude in counts, its range and its bearing. A pure observer: it
+# publishes nothing and cannot affect detection or mapping.
+sonar_viewer:
+  ros__parameters:
+    enable: false                # master switch
+    mode: "viewer"             # viewer: interactive window. png: write a file (headless)
+    sonar_image_topic: "/blueview_message_polar"   # the RAW sonar, same as leading_edge_node
+    flip_ranges: true          # MUST match leading_edge_node's flip_ranges above
+
+    every_n: 1                 # process 1 sweep in N; 1 = the sonar's real rate
+    window_scale: 0.6          # display downscale; readout values are unaffected
+    # Amplitude bands. Band i covers [bands[i], bands[i+1]) and is tinted
+    # colours[i]; the last band is open-ended. The two lists must be the same
+    # length and the edges strictly ascending — the node refuses to start
+    # otherwise rather than silently mis-colouring.
+    # Available: pink yellow red orange magenta cyan green blue white.
+    # The hard SDK clamp is 65535, so anything in the top band may be CLIPPED
+    # and its true value unknown.
+    highlight_bands:   [30000.0, 40000.0, 50000.0]
+    highlight_colours: ["pink",  "yellow", "red"]
+    highlight_alpha:   0.8     # tint opacity. ↑ if the bands are hard to tell
+                               #   apart — at these levels the grey underneath is
+                               #   already near white and washes every tint toward
+                               #   white as it shows through. [] disables banding.
+    # Greyscale mapping. DISPLAY ONLY — the hover readout and the values the
+    # classifier scores are linear counts regardless of what is set here.
+    # These two defaults reproduce sonar_image.png exactly.
+    display_stretch: "max"     # max: lo=0, hi=frame maximum — byte-identical to
+                               #   leading_edge_node's sonar_image.png, so the two
+                               #   can be compared directly. A shade means the same
+                               #   thing sweep to sweep, but ONE saturated return
+                               #   darkens the whole frame.
+                               # percentile: use grey_lo_pct/grey_hi_pct instead.
+                               #   Robust to a single specular spike so faint
+                               #   structure stays visible, but the mapping floats
+                               #   with the scene.
+    # Contrast enhancement, applied in the POLAR domain before scan conversion
+    # (the fan is >half black outside the swath; a local method there would key
+    # its statistics off the void and blow up noise at the edges).
+    contrast: "none"           # none | clahe | equalize
+                               #   clahe: contrast-limited adaptive histogram
+                               #     equalisation. Lifts local structure — a dim
+                               #     target against dim background — without the
+                               #     whole stretch being set by one specular
+                               #     return. The right default for sonar.
+                               #   equalize: plain global equalisation. Cruder;
+                               #     will amplify water-column speckle to full
+                               #     scale.
+                               #   none: byte-identical to sonar_image.png.
+                               #     THE DEFAULT — enhancement is off.
+    clahe_clip:  2.0           # how much noise CLAHE may amplify. ↑ punchier and
+                               #   noisier; 1.0-2.0 is calm, 4+ is aggressive.
+    clahe_tiles: 8             # NxN tile grid. ↑ more local (finer structure,
+                               #   more risk of tiling artefacts).
+    display_gamma: 1.0         # applied after; >1 lifts the dark end. 1.0 = off.
+
+    display_log: false         # true compresses the tone curve first. Amplitude
+                               #   spans ~55x in one sweep, so linear leaves the
+                               #   median return around grey 57/255 and log around
+                               #   158 — legible, but not what sonar_image.png shows.
+
+    hover_readout: true        # the cursor probe — amplitude / range / bearing
+    overlay_info: false        # status line in the corner
+    leading_edge_vis: true    # overlay the detected edge in red
+    leading_edge_topic: "/blueview/leading_edge"
+
+    classes_file: ""           # OPTIONAL: a sonar_classification classes.yaml. When
+                               #   set, the readout adds "nearest class, N sigma"
+                               #   using its amplitude levels. Read as plain YAML —
+                               #   this viewer has NO dependency on that package.
+
+    output_path: "/home/rosdev/ros2_ws/src/images/blueview/sonar_amplitude.png"
+    grid_ranges: 6             # png mode only: polar section grid
+    grid_beams:  24
+    grey_lo_pct: 5.0           # percentile mapped to black
+    grey_hi_pct: 99.0          # ... and to white
+    min_valid_frac: 0.05       # sections this thinly sampled are dimmed

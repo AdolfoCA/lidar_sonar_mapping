@@ -1,0 +1,8 @@
+# A6 (sweep, 3 of 3) — VOXEL SIZE 0.40 m.
+# Coarser voxels: many revisits per voxel, so W accumulates fast and posteriors
+# get confident quickly — at the cost of spatial resolution (structure detail
+# blurs). The high-accumulation end of the trade-off.
+# NB: the plotter VOXEL_RES and any MATLAB voxelization must match this r_v.
+voxel_mapper:
+  ros__parameters:
+    r_v: 0.40

@@ -1,0 +1,116 @@
+# =============================================================================
+# classes.yaml — PREDEFINED class definitions for the eq-24 Dirichlet pipeline.
+#
+# This file IS the class inventory: the Dirichlet–categorical distribution of
+# every voxel runs over exactly these classes plus the trailing catch-all
+# "other". There is NO online class learning — every parameter of the paper's
+# Table I is a FIXED value read from here. To add/remove/retune a class, edit
+# this file and restart voxel_mapper (no code change).
+#
+# Each class defines the four factors of the class-conditional likelihood
+# (paper eq 24):
+#     L_{i,c} = p(p_i|c) · p(I_i|p_i,c) · p(ℓ_i|c) · p(m_i|c)
+#       position  (eq 31): N(h_i; nu, omega² + ϱ_i)     h_i = z_i − ẑ_bed
+#       intensity (eq 34): N(I_i; mu + λ·h_i, sigma² + λ²·ϱ_i)
+#       lidar     (eq 37): hurdle  pi^s·(1−pi)^(1−s) × [Pois>0(k;kappa)·Exp(g;gamma)]^s
+#       shape     (eq 42): hurdle  rho^s·(1−rho)^(1−s) × p(m_R|c)^(s/N_R)
+#
+# The "other" block is the paper's base measure Λ_H made concrete (Alg. 1 line
+# 8: L_i,new = p(y_i | Λ_H)): a deliberately BROAD class that claims the
+# returns no predefined class explains. It is a normal member of the
+# categorical — voxels dominated by unexplained returns get MAP label "other".
+# =============================================================================
+
+global:
+  # λ — height–brightness lift [intensity units / m] (eq 33). A shared,
+  # SENSOR-GEOMETRY constant, not a class property: returns higher above the
+  # bottom sit closer to the array and are brighter. 0.0 disables the lift
+  # (safe default until calibrated from data: regress I on h over open seabed).
+  lambda_lift: 0.0
+  # θ — fixed tilt of the sonar w.r.t. horizontal [deg] (eq 26). Only enters
+  # the elevation-ambiguity variance ϱ_i = (r_i·cosθ·Δϕ)²/12 (eqs 29–30).
+  sonar_tilt_deg: 15.0
+  # Δϕ — vertical aperture of the sonar [deg] (eq 27). BlueView P900: ~20°.
+  elev_aperture_deg: 20.0
+  # Responsibility weight of the "other" column (the analogue of the paper's
+  # stick-breaking γ, Alg. 1 line 9: r_new ∝ γ·L_new). >1 makes "other" easier
+  # to claim (more returns flagged as unexplained), <1 harder.
+  other_weight: 1.0
+
+# Globally enable/disable each factor of eq 24. A disabled factor abstains for
+# every return and class (contributes log-likelihood 0), so the remaining
+# factors still combine correctly. Useful to debug one cue at a time.
+factors:
+  position: true
+  intensity: true
+  lidar: true
+  shape: true
+
+# ── The predefined classes ────────────────────────────────────────────────────
+# Every block must define ALL four factors (Table I):
+#   position:  nu [m], omega [m]        height band mean / intrinsic spread
+#   intensity: mu [I], sigma [I]        base backscatter / residual spread
+#   lidar:     pi (0,1), kappa >0, gamma >0
+#              pi    — prob. of overhead LiDAR presence (structure → 1, seabed → 0)
+#              kappa — zero-truncated-Poisson rate of the overhead support COUNT k_i
+#              gamma — Exponential rate of the vertical GAP g_i [1/m] (mean gap = 1/gamma)
+#   shape:     rho (0,1) — prob. of belonging to a grown bright region
+#              logarea/solidity_logit/shadow/texture: {mean, std} Gaussians (eq 41)
+#              NOTE units: solidity is modelled on the LOGIT scale; texture is the
+#              LOG intensity variance log(1+var) (engineering choice — raw uint16
+#              variances span decades); shadow is the extractor's [0,1] composite
+#              (contrast × relative length of the acoustic shadow behind the region).
+#
+# Intensity scale: RAW BlueView uint16 (leading_edge_node publishes raw
+# intensity; adaptive detection thresholds run ~3500, seabed Kalman prior 5000).
+# ALL VALUES BELOW ARE STARTING POINTS — tune from Eq24Telemetry / the CSV logs.
+
+classes:
+  - name: seabed
+    position:  {nu: 0.0,  omega: 0.20}    # on the fitted bottom, tight band
+    intensity: {mu: 5000.0, sigma: 1200.0}
+    lidar:     {pi: 0.05, kappa: 2.0, gamma: 2.0}   # essentially never under structure
+    shape:     # bare seabed: rho → 0 — the ABSENCE of shape is itself informative
+      rho: 0.001
+      logarea:        {mean: -1.5, std: 1.0}   # rarely forms regions; broad if it does
+      solidity_logit: {mean: 0.0,  std: 1.5}
+      shadow:         {mean: 0.10, std: 0.20}
+      texture:        {mean: 12.0, std: 3.0}
+
+  - name: object
+    position:  {nu: 0.35, omega: 0.30}    # proud of the bottom, sub-metre
+    intensity: {mu: 7000.0, sigma: 1500.0}
+    lidar:     {pi: 0.10, kappa: 2.0, gamma: 1.0}   # submerged: rarely overhead LiDAR
+    shape:     # compact bright blobs with a short, ragged shadow
+      rho: 0.55
+      logarea:        {mean: -0.7, std: 0.8}   # ~0.2–1.5 m² typical
+      solidity_logit: {mean: 1.5,  std: 1.0}   # fairly solid/convex
+      shadow:         {mean: 0.35, std: 0.20}
+      texture:        {mean: 14.0, std: 2.5}
+
+  - name: structure
+    position:  {nu: 1.20, omega: 1.00}    # walls/pillars span the water column
+    intensity: {mu: 9000.0, sigma: 2500.0}
+    lidar:     {pi: 0.90, kappa: 8.0, gamma: 0.8}   # under LiDAR-visible structure
+    shape:     # large opaque regions casting deep, long, sharp shadows
+      rho: 0.70
+      logarea:        {mean: 0.7,  std: 0.9}   # ~1–6 m²
+      solidity_logit: {mean: 1.0,  std: 1.2}
+      shadow:         {mean: 0.75, std: 0.15}  # the principal discriminator vs vegetation
+      texture:        {mean: 15.0, std: 2.5}
+
+# ── The catch-all: a return that fits none of the above is "other" ────────────
+# Broad on every channel (the base measure Λ_H): wide variances, indifferent
+# presence probabilities. Keep it broad — sharpening "other" steals returns
+# from the real classes; tune other_weight (global) instead to shift how
+# eagerly it claims unexplained returns.
+other:
+  position:  {nu: 0.5,  omega: 2.0}
+  intensity: {mu: 6000.0, sigma: 4000.0}
+  lidar:     {pi: 0.5,  kappa: 3.0, gamma: 0.5}
+  shape:
+    rho: 0.5
+    logarea:        {mean: 0.0,  std: 2.0}
+    solidity_logit: {mean: 0.0,  std: 2.0}
+    shadow:         {mean: 0.5,  std: 0.35}
+    texture:        {mean: 13.0, std: 5.0}

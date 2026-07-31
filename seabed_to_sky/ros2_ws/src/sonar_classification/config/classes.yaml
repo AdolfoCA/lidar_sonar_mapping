@@ -1,0 +1,107 @@
+# =============================================================================
+# classes.yaml — the class inventory. This file is the model.
+#
+#   L_{i,c} = p(p_i|c) · p(I_i|c) · p(l_i|c) · p(m_i|c)
+#     position   B(h; l, u, sqrt(tau^2 + rho_var))   soft box over a height interval
+#     amplitude  N(A; mu, sigma)                     raw uint16 counts
+#     lidar      hurdle: pi, then clearance          waterline-referenced
+#     shape      hurdle: rho, then (extent, thickness)
+#
+# Nothing here is learned. Edit and restart; no code change.
+# Three rules: (1) classes separate ONLY on channels where their values differ,
+# so put a distinction where the physics differs, not where it is convenient;
+# (2) every value must be a length, a level, a rate, or a counted fraction;
+# (3) pi and rho are fractions of RETURNS, never 0 or 1.
+# =============================================================================
+
+global:
+  sonar_tilt_deg:      30.0   # mechanical downtilt [deg]; must match the static TF
+  elev_aperture_deg:   20.0   # unresolved vertical aperture [deg]; 20 @ 2250 kHz, 12 @ 900 kHz
+  beamwidth_deg:        1.0   # width of one beam [deg]; deconvolved from the measured extent
+  beam_spacing_deg:     0.18  # angular step between beams [deg]; turns a beam count into a span
+
+  lidar:
+    eps_xy: 0.04              # radius of the overhead column [m]
+    k_min:  5                 # points needed to assert structure overhead; a validation gate only
+
+factors:
+  position:  true             # disable a whole channel; disabled = abstains for every return
+  amplitude: true
+  lidar:     true
+  shape:     false
+
+ablation:
+  position_gaussian:    false     # true = mid-extent Gaussian instead of the soft box
+  lidar_legacy_gap_ref: false     # true = clearance from the return instead of the waterline
+  shape_dedup_mode:     per_voxel # per_voxel | inv_nr
+  spatial_prior:        true      # false = uniform pi instead of the neighbour prediction
+
+# Units: metres, raw counts, fractions in (0,1). Shape lengths are a median
+# plus a multiplicative tolerance — spread_factor 2.0 reads "within a factor of two".
+classes:
+
+  - name: seabed
+    position:  {l: 0.0, u: 0.0, tau: 0.30}   # zero extent = the Gaussian member; tau absorbs bed-fit error
+    amplitude: {mu: 5000, sigma: 3000}        # anchor: the level you measured for bare bed
+    lidar:
+      pi: 0.04                               # fraction of open bed lying under a deck or bridge
+      clearance: {kind: box, l: 1.0, u: 6.0, sigma: 1.0}  # if covered, the cover hangs 1-6 m up
+    shape:
+      rho: 0.05                              # bare bed forms no region; that absence is informative
+      extent:    {median_m: 1.00, spread_factor: 4.0}
+      thickness: {median_m: 0.15, spread_factor: 3.0}
+
+  - name: vegetation
+    position:  {l: 0.0, u: 0.5, tau: 0.35}   # bed to canopy top; soft edge = ragged, moving top
+    amplitude: {mu: 20000, sigma: 20000}
+    lidar:
+      pi: 0.04                               # submerged — same as bed, so this channel cannot split them
+      clearance: {kind: box, l: 1.0, u: 6.0, sigma: 1.0}
+    shape:
+      rho: 0.80                              # a bright blob on the bed is the signature
+      extent:    {median_m: 1.20, spread_factor: 2.5}
+      thickness: {median_m: 0.60, spread_factor: 2.0}  # THICK — volume scatterer, unlike a hard face
+
+  - name: object
+    position:  {l: 0.0, u: 1.0, tau: 0.15}   # bed to its top; sharp rigid edge
+    amplitude: {mu: 27000, sigma: 17000}
+    lidar:
+      pi: 0.06                               # submerged, marginally likelier than open bed to be covered
+      clearance: {kind: box, l: 1.0, u: 6.0, sigma: 1.0}
+    shape:
+      rho: 0.60
+      extent:    {median_m: 0.60, spread_factor: 2.0}
+      thickness: {median_m: 0.20, spread_factor: 2.0}
+
+  # wall and pillar differ ONLY in extent and pi — same material, same water
+  # column, so no other channel can honestly separate them.
+  - name: wall
+    position:  {l: 0.0, u: 8.0, tau: 0.30}   # the whole water column; set u to site depth
+    amplitude: {mu: 27000, sigma: 17000}
+    lidar:
+      pi: 0.90                               # its emergent part is what the LiDAR sees; never 1.0
+      clearance: {kind: exp, gamma: 1.0}     # surface-piercing: mode at 0, 1/gamma = freeboard scale
+    shape:
+      rho: 0.90
+      extent:    {median_m: 6.00, spread_factor: 2.0}  # the discriminator vs pillar
+      thickness: {median_m: 0.10, spread_factor: 2.0}  # thin — a hard face scatters at its surface
+
+  #- name: pillar
+  #  position:  {l: 0.0, u: 8.0, tau: 0.30}
+  #  amplitude: {mu: 27000, sigma: 17000}
+  #  lidar:
+  #    pi: 0.50                               # lower than a wall: a narrow target, the column misses it more
+  #    clearance: {kind: exp, gamma: 1.0}
+  #  shape:
+  #    rho: 0.90
+  #    extent:    {median_m: 0.50, spread_factor: 2.0}  # the discriminator vs wall
+  #    thickness: {median_m: 0.10, spread_factor: 2.0}
+
+# Known blind spot: a bright, bearing-elongated, range-thin bedform (a sand
+# ripple) shares the wall signature. Left to intensity, height and the spatial
+# prior — do not tighten extent to exclude it, that would lose real walls.
+#
+# Amplitude levels are RAW COUNTS and therefore depend on range and on the
+# head's Gain/TVG settings. Re-measure them (sample_class) after any change to
+# either, and expect sigma/mu ~ 0.5 on every class — that is Rayleigh speckle,
+# not a loose sample.

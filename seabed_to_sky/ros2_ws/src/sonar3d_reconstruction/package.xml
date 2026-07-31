@@ -23,6 +23,11 @@
   <test_depend>python3-pytest</test_depend>
   
   <exec_depend>cv_bridge</exec_depend>
+  <!-- DEBUG-only: leading_edge_node's shape_factor.png overlay imports
+       sonar_map's eq-42 shape factor + classes.yaml to label grown regions.
+       exec-only (runtime import); no build/cycle since sonar_map never imports
+       this package. -->
+  <exec_depend>sonar_map</exec_depend>
   <export>
     <build_type>ament_python</build_type>
   </export>

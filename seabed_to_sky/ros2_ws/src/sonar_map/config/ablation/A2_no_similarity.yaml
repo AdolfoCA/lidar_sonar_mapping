@@ -1,0 +1,10 @@
+# A2 — NO NEIGHBOUR-SIMILARITY GATE.
+# Forces similarity = 1 always. _structure_neighbour_mean_intensity() returns
+# None unless at least n_min_neighbors structure-plausible neighbours exist;
+# with n_min_neighbors huge it never qualifies, so the gate is bypassed and
+# the STRUCTURE responsibility depends only on f_L_geom * m_str.
+# Expect: structure bleeds into intensity-similar-but-wrong voxels near LiDAR;
+# lower precision than A0.
+voxel_mapper:
+  ros__parameters:
+    n_min_neighbors: 100000   # never enough neighbours -> similarity = 1

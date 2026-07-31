@@ -1,10 +1,35 @@
 #!/usr/bin/env python3
 """
-Save Map Server - Saves PCD files with initial pose from LiDAR odometry
+Save Map Server - Saves PCD files with initial pose from LiDAR odometry.
+
+Saves, on a /save_map Trigger:
+  * <topic>_<ts>.pcd — the map cloud from `map_topic` (default /sonar_map, the
+    occupancy voxel map from sonar_map_ned) with EVERY float32 field the
+    PointCloud2 carries, ASCII PCD so MATLAB can read each one. The file is
+    named after the topic, so /sonar_map -> sonar_map_<ts>.pcd and
+    /dirichlet_voxels -> dirichlet_voxels_<ts>.pcd.
+    This node is deliberately FIELD-AGNOSTIC, which is what lets one node save
+    either map: /sonar_map carries x/y/z/intensity, while the eq-24 pipeline's
+    /dirichlet_voxels carries one posterior column per class (theta_<name>,
+    e.g. theta_seabed ... theta_other) alongside x/y/z and the display fields
+    (confidence, weight, ...) — a config-defined inventory. Hardcoding names
+    here would silently drop columns whenever classes.yaml changes; instead the
+    PCD header is built from the message's field list at save time.
+  * the FAST-LIO2 LiDAR map (via the /export_kdtree_pcd service) — the LiDAR
+    cloud to overlay against the sonar map in MATLAB.
+  * metadata_<ts>.json — initial / final odometry pose.
+
+In MATLAB the extra fields are read by parsing the ASCII DATA section directly
+(pcread only returns x/y/z + intensity/colour); the FIELDS line names every
+column in order.
+
+To save a different cloud without a rebuild:
+    ros2 run sonar_map save_map --ros-args -p map_topic:=/dirichlet_voxels
 """
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import PointCloud2
 from nav_msgs.msg import Odometry
 from std_srvs.srv import Trigger
@@ -20,12 +45,27 @@ class SaveMapServer(Node):
     def __init__(self):
         super().__init__('save_map')
         
-        # Point cloud subscription
-        self.sonar_sub = self.create_subscription(
+        # The map cloud to save — every field it carries is kept for the MATLAB
+        # export (per-class theta_<name> columns included, whatever the class
+        # set is). Default /sonar_map (sonar_map_ned's occupancy voxel map);
+        # set map_topic to /dirichlet_voxels to save the eq-24 posterior cloud.
+        self.map_topic = self.declare_parameter('map_topic', '/sonar_map').value
+        # The saved file is named after the topic: /sonar_map -> sonar_map_<ts>.pcd.
+        self.file_prefix = self.map_topic.strip('/').replace('/', '_') or 'map'
+        # BEST_EFFORT on the SUBSCRIBER side is compatible with both publishers:
+        # /dirichlet_voxels offers BEST_EFFORT (sensor-data QoS) and /sonar_map
+        # offers RELIABLE, and a best-effort request is satisfied by either. A
+        # RELIABLE request would silently never connect to /dirichlet_voxels.
+        map_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.map_sub = self.create_subscription(
             PointCloud2,
-            '/sonar_map',
-            self.sonar_callback,
-            1
+            self.map_topic,
+            self.map_callback,
+            map_qos
         )
 
         # LiDAR odometry from SPARK-FastLIO2
@@ -43,19 +83,22 @@ class SaveMapServer(Node):
         )
         
         # Data storage
-        self.sonar_cloud = None
+        self.map_cloud = None          # structured np array, all cloud fields
+        self.map_field_names = None    # ordered field names from the message
         self.initial_pose = None
         self.current_pose = None
         self.init_captured = False
-        
+
         self.output_dir = Path.home() / 'ros2_ws' / 'saved_maps' / 'PCD'
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.get_logger().info('='*50)
         self.get_logger().info('Save Map Server started')
         self.get_logger().info('='*50)
         self.get_logger().info(f'Output directory: {self.output_dir}')
-        self.get_logger().info('Listening for /odometry and /sonar_map')
+        self.get_logger().info(
+            f'Saving map topic : {self.map_topic} -> {self.file_prefix}_<ts>.pcd')
+        self.get_logger().info(f'Listening for /odometry and {self.map_topic}')
 
     def odom_callback(self, msg: Odometry):
         """Store odometry - capture FIRST pose as initial"""
@@ -82,13 +125,21 @@ class SaveMapServer(Node):
         
         self.current_pose = current_pose
 
-    def sonar_callback(self, msg: PointCloud2):
-        """Store latest sonar cloud"""
+    def map_callback(self, msg: PointCloud2):
+        """Store the latest map cloud with ALL its fields.
+
+        We read every field present on the message (no field_names subset) and
+        remember their names IN MESSAGE ORDER, so the saved PCD carries whatever
+        the publisher put there — x/y/z/intensity for /sonar_map, or x/y/z plus
+        one theta_<class> column per classes.yaml entry (incl. theta_other) and
+        the display fields for /dirichlet_voxels. Nothing is hardcoded here.
+        """
         try:
-            points = pc2.read_points(msg, field_names=('x', 'y', 'z', 'intensity'))
-            self.sonar_cloud = np.array(list(points))
+            self.map_field_names = [f.name for f in msg.fields]
+            pts = np.asarray(pc2.read_points(msg, skip_nans=False))
+            self.map_cloud = pts
         except Exception as e:
-            self.get_logger().error(f'Error reading sonar cloud: {e}')
+            self.get_logger().error(f'Error reading map cloud from {self.map_topic}: {e}')
 
     def save_map_callback(self, request, response):
         """Save sonar map, FAST-LIO2 KD-tree, and pose metadata"""
@@ -122,14 +173,20 @@ class SaveMapServer(Node):
             saved_files.append(str(metadata_file))
             self.get_logger().info(f'✅ Saved metadata: {metadata_file}')
             
-            # Save sonar map
-            if self.sonar_cloud is not None and len(self.sonar_cloud) > 0:
-                sonar_filename = self.output_dir / f'sonar_map_{timestamp}.pcd'
-                self.save_pcd(sonar_filename, self.sonar_cloud)
-                saved_files.append(str(sonar_filename))
-                self.get_logger().info(f'✅ Saved sonar map: {sonar_filename} ({len(self.sonar_cloud)} points)')
+            # Save the map cloud with ALL fields
+            if self.map_cloud is not None and len(self.map_cloud) > 0:
+                map_filename = self.output_dir / f'{self.file_prefix}_{timestamp}.pcd'
+                self.save_pcd(map_filename, self.map_cloud,
+                              self.map_field_names)
+                saved_files.append(str(map_filename))
+                self.get_logger().info(
+                    f'✅ Saved {self.map_topic}: {map_filename} '
+                    f'({len(self.map_cloud)} points, '
+                    f'fields={self.map_field_names})')
             else:
-                self.get_logger().warn('⚠️  No sonar cloud data')
+                self.get_logger().warn(
+                    f'⚠️  No cloud data on {self.map_topic} '
+                    f'(is the pipeline publishing?)')
             
             # Export FAST-LIO2 KD-tree
             kdtree_path = self.export_kdtree(timestamp)
@@ -180,25 +237,46 @@ class SaveMapServer(Node):
             return None
 
 
-    def save_pcd(self, filename, points):
-        """Save point cloud to PCD file - MATLAB compatible ASCII format"""
-        xyz = np.column_stack((points['x'], points['y'], points['z']))
-        intensity = points['intensity'] if 'intensity' in points.dtype.names else np.ones(len(points))
-        
+    def save_pcd(self, filename, points, field_names=None):
+        """Save a point cloud to an ASCII PCD file with ALL given fields.
+
+        ``points`` is a structured numpy array (as returned by pc2.read_points);
+        ``field_names`` is the ordered list of fields to write. The header is
+        DYNAMIC — FIELDS/SIZE/TYPE/COUNT are generated from that list, so any
+        class inventory (any number of theta_<name> columns) round-trips
+        without touching this node. Every field is written as a float32 column
+        so MATLAB can read each one; the FIELDS line names the columns in
+        order, so a MATLAB reader can map column -> field.
+        """
+        if field_names is None:
+            field_names = list(points.dtype.names)
+        # Keep only fields actually present (defensive).
+        field_names = [n for n in field_names if n in points.dtype.names]
+        n = len(points)
+
+        # Stack the requested fields into one (N, F) float array, in order.
+        cols = np.column_stack(
+            [np.asarray(points[name], dtype=np.float64) for name in field_names])
+
+        n_fields = len(field_names)
+        sizes = ' '.join(['4'] * n_fields)
+        types = ' '.join(['F'] * n_fields)
+        counts = ' '.join(['1'] * n_fields)
+
         with open(filename, 'w') as f:
             f.write('# .PCD v.7 - Point Cloud Data file format\n')
             f.write('VERSION .7\n')
-            f.write('FIELDS x y z intensity\n')
-            f.write('SIZE 4 4 4 4\n')
-            f.write('TYPE F F F F\n')
-            f.write('COUNT 1 1 1 1\n')
-            f.write(f'WIDTH {len(xyz)}\n')
+            f.write('FIELDS ' + ' '.join(field_names) + '\n')
+            f.write(f'SIZE {sizes}\n')
+            f.write(f'TYPE {types}\n')
+            f.write(f'COUNT {counts}\n')
+            f.write(f'WIDTH {n}\n')
             f.write('HEIGHT 1\n')
-            f.write(f'POINTS {len(xyz)}\n')
+            f.write('VIEWPOINT 0 0 0 1 0 0 0\n')
+            f.write(f'POINTS {n}\n')
             f.write('DATA ascii\n')
-            
-            for i in range(len(xyz)):
-                f.write(f'{xyz[i, 0]:.6f} {xyz[i, 1]:.6f} {xyz[i, 2]:.6f} {intensity[i]:.6f}\n')
+            for i in range(n):
+                f.write(' '.join(f'{v:.6f}' for v in cols[i]) + '\n')
 
 
 def main(args=None):

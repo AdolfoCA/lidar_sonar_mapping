@@ -1,0 +1,9 @@
+# A6 (sweep, 1 of 3) — VOXEL SIZE 0.10 m.
+# Finer voxels: better spatial resolution but fewer revisits per voxel, so each
+# voxel accumulates less evidence W and posteriors stay less confident. Pair with
+# A6_voxelsize_020 (baseline) and A6_voxelsize_040 to show the resolution-vs-
+# accumulation trade-off behind the persistent-map design.
+# NB: the plotter VOXEL_RES and any MATLAB voxelization must match this r_v.
+voxel_mapper:
+  ros__parameters:
+    r_v: 0.10

@@ -1,0 +1,19 @@
+# A1 — NO LiDAR SUPPORT  (defends Claim 1).
+# Kills the surface-LiDAR-into-sonar path. With r_lidar ~ 0 the LiDAR cluster
+# count is ~0, so count_factor -> 0, so f_L_geom = d_factor*count_factor -> 0,
+# so the STRUCTURE responsibility r_str -> 0: no voxel can become STRUCTURE.
+# Expect: STRUCTURE F1 collapses; structure returns fall back to OBJECT/SEABED
+# by intensity alone — the point of the figure.
+return_classifier:
+  ros__parameters:
+    r_lidar: 0.000001     # [m] count disc ~ 0  -> count_factor ~ 0
+    d_scale: 0.000001     # [m] distance gate ~ 0 -> d_factor ~ 0 (belt and braces)
+
+# Keep the debug nodes consistent if they are enabled (they mirror r_lidar).
+lidar_count_debug:
+  ros__parameters:
+    r_lidar: 0.000001
+lidar_support_csv_logger:
+  ros__parameters:
+    r_lidar: 0.000001
+    d_scale: 0.000001

@@ -11,7 +11,7 @@
       lidar_type: 3  # 3 for ouster lidar 
       scan_line: 64
       timestamp_unit: 3           # 0=SEC, 1=MS, 2=US, 3=NS; Ouster timestamps are in nanoseconds
-      blind: 0.3                # min range in meters
+      blind: 0.0                # min range in meters
       blind_for_human_pilot: 0.0
       water_level: 0.          # reject points with z < -water_level in LiDAR frame [m]; 0 = disabled
       # Ouster PointCloud2 field name mapping
@@ -38,19 +38,29 @@
 
 
     publish:
-      path_en: true
+      path_en: false
       scan_publish_en: true        # false: close all the point cloud output
       dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
       scan_lidarframe_pub_en: false # true: output the point cloud scans in the LiDAR frame
       scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body frame
       scan_baseframe_pub_en: false  # true: output the point cloud scans in the base frame
+      # Rate-limited copy of /cloud_registered for lightweight RViz visualization.
+      # When on, /cloud_registered_throttle carries the SAME world cloud but at
+      # most cloud_throttle_rate Hz (drops the rest). Point RViz at it instead of
+      # /cloud_registered to update once per second. Needs scan_publish_en: true.
+      cloud_throttle_en: false        # /cloud_registered_throttle on/off
+      cloud_throttle_rate: 1.0       # [Hz] ↑ faster updates (≤0 ⇒ every scan)
+      # Debug / visualization topics — default OFF to save CPU. Set true to enable.
+      map_visualization_en: true   # /map_visualization: flattens the WHOLE ikd-tree every 5 s (heavy)
+      usv_marker_en: false          # /usv_marker: MarkerArray every 1 s
+      debug_clouds_en: false        # /debug/cloud_raw|subsampled|voxel: built+published every scan
 
     pcd_save:
       pcd_save_en: false
       interval: 10
     
     dynamic_filter:
-      enable: true
+      enable: false
       nearby_radius: 3.0  # [m] points closer than this to existing map geometry
                           # that don't fit the plane are treated as moving objects
                           # and excluded from the map. Increase if you get false

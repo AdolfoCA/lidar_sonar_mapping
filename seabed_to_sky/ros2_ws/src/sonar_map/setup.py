@@ -25,18 +25,15 @@ setup(
         'console_scripts': [
             'sonar_scan_ned = sonar_map.sonar_scan_ned:main',
             'sonar_map_ned_no_semantic = sonar_map.sonar_map_ned_no_semantic:main',
-            'sonar_map_ned_semantic = sonar_map.sonar_map_ned_semantic:main',
             'save_map = sonar_map.save_map:main',
-            'object_cluster_node = sonar_map.object_cluster_node:main',
-            'sdf_fitting_node = sonar_map.sdf_fitting_node:main',
-            'norbit_scan_ned = sonar_map.norbit_scan_ned:main',
-            'norbit_map_ned = sonar_map.norbit_map_ned:main',
-            'semantic_map = sonar_map.semantic_map:main',
             # Dirichlet-Categorical voxel mapping pipeline
             'seabed_estimator = sonar_map.seabed_estimator:main',
             'return_classifier = sonar_map.return_classifier:main',
             'voxel_mapper = sonar_map.voxel_mapper:main',
+            'learned_voxel_mapper = sonar_map.learned_voxel_mapper:main',
             'seabed_surface = sonar_map.seabed_surface:main',
+            'lidar_count_debug = sonar_map.lidar_count_debug:main',
+            'lidar_support_csv_logger = sonar_map.lidar_support_csv_logger:main',
         ],
     },
 )

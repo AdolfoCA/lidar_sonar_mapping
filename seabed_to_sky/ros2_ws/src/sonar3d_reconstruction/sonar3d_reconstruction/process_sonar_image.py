@@ -31,13 +31,38 @@ def ProjectedSonarImage2Image(msg: ProjectedSonarImage, normalize=False) -> np.n
     nbeams = msg.image.beam_count
     nrange = len(msg.ranges)
 
+    # Guard the row<->range contract this whole pipeline depends on. The raw
+    # buffer is reshaped so that row i is range bin i (row 0 == ranges[0], the
+    # NEAREST bin), and every consumer pairs an image row with ranges[row]
+    # (image2Profile's `r = ranges[edges]`, cut_image, the crop in
+    # acoustic3d_edge). That only holds if `ranges` is sorted near->far. If a
+    # future driver emits ranges far->near (reversed row order), the reshape
+    # would silently mirror every leading-edge range about mid-range — the exact
+    # bug the removed `np.flip(image, axis=0)` used to cause. Fail loudly here
+    # instead of shipping a mirrored point cloud.
+    if nrange >= 2 and not np.all(np.diff(ranges) > 0):
+        raise ValueError(
+            "ProjectedSonarImage.ranges is not strictly ascending "
+            f"(ranges[0]={ranges[0]:.3f} m, ranges[-1]={ranges[-1]:.3f} m). "
+            "The image-row <-> ranges[row] pairing assumes near->far ordering; "
+            "a reversed or non-monotonic ranges array mirrors every leading-edge "
+            "range. Re-check the sonar driver's range ordering before relaxing "
+            "this guard."
+        )
+
     # Convert beam directions from Vector3 to list of beam directions given in radians
     beams = np.array([np.arctan2(beam.y, beam.z) for beam in msg.beam_directions])
 
     # Get the image data and reshape it according to the dtype
     dtype = dtype_mapping[msg.image.dtype]
     image = np.frombuffer(msg.image.data, dtype=dtype).reshape((nrange, nbeams))
-    image = np.flip(image, axis=0)  # Flip the image vertically to have the correct orientation (range increases downwards)
+    # NOTE: row i of the raw buffer is range bin i, i.e. row 0 == ranges[0] is the
+    # NEAREST bin (range already increases downwards). Do NOT flip axis 0 here:
+    # `ranges` below is returned UN-flipped, and every consumer pairs an image row
+    # with `ranges[row]` (image2Profile's `r = ranges[edges]`, cut_image, the crop
+    # in acoustic3d_edge). Flipping the image but not `ranges` mirrored every
+    # leading-edge range about mid-range — `r = (ranges[0]+ranges[-1]) - r_true` —
+    # which placed the "leading edge" behind the bright return instead of in front.
 
     # Check if beams are in the correct order (left to right) to ensure correct image orientation
     if beams[0] > beams[-1]:
@@ -83,11 +108,18 @@ def filter_horizontal_image(imageHorizontal, method: list = ["otsu"], kernel_siz
     # estimator in the semantic mapper to chase a moving target.
     imageHorizontal = np.clip(imageHorizontal, 0, 65535).astype(np.uint16)
 
-    # We remove additional noise introduced by high gain values in the center of the image.
-    n_bearings_right = 20
+    # We remove additional noise introduced by high gain values in the center of
+    # the image. The center band must be relative to the actual beam count: the
+    # old hardcoded column 128 assumed a 256-beam image and lands left-of-center
+    # on a 512-beam BlueView, masking the wrong beams. Center on n_beam // 2 and
+    # clamp so it is correct for any beam count.
     n_bearings_left = 20
-    mask = imageHorizontal[:, 128 - n_bearings_left : 127 + n_bearings_right] < np.percentile(imageHorizontal[:, 127 - n_bearings_left : 127 + n_bearings_right], 50)
-    imageHorizontal[:, 128 - n_bearings_left : 127 + n_bearings_right][mask] = 0
+    n_bearings_right = 20
+    center = imageHorizontal.shape[1] // 2
+    lo = max(0, center - n_bearings_left)
+    hi = min(imageHorizontal.shape[1], center + n_bearings_right)
+    center_band = imageHorizontal[:, lo:hi]
+    center_band[center_band < np.percentile(center_band, 50)] = 0
 
     # Smooth along range axis per beam to reduce speckle, preserving leading edge gradient
     imageHorizontal = gaussian_filter1d(imageHorizontal.astype(float), sigma=2, axis=0)
